@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, QrCode, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import QRCode from 'qrcode.react';
+import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
@@ -140,7 +140,7 @@ const Results = () => {
               </DialogHeader>
               <div className="flex flex-col items-center gap-4 py-4">
                 <div className="bg-white p-4 rounded-lg border-2">
-                  <QRCode value={surveyUrl} size={256} />
+                  <QRCodeSVG value={surveyUrl} size={256} />
                 </div>
                 <div className="w-full">
                   <div className="flex gap-2">
