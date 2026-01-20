@@ -22,9 +22,6 @@ interface QuestionData {
 const CreateSurvey = () => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [maxVotes, setMaxVotes] = useState('');
-  const [expiresAtLocal, setExpiresAtLocal] = useState('');
-
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
@@ -126,18 +123,6 @@ const CreateSurvey = () => {
       return;
     }
 
-    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
-    if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
-      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein');
-      return;
-    }
-
-    const expiresAt = expiresAtLocal.trim() ? new Date(expiresAtLocal).toISOString() : null;
-    if (expiresAtLocal.trim() && Number.isNaN(new Date(expiresAtLocal).getTime())) {
-      toast.error('Bitte geben Sie ein gültiges Ablaufdatum an');
-      return;
-    }
-
     if (questions.length === 0) {
       toast.error('Bitte fügen Sie mindestens eine Frage hinzu');
       return;
@@ -163,8 +148,6 @@ const CreateSurvey = () => {
           title,
           description,
           created_by: user?.id,
-          max_votes: parsedMaxVotes,
-          expires_at: expiresAt,
         })
         .select()
         .single();
@@ -259,29 +242,6 @@ const CreateSurvey = () => {
                 placeholder="Optionale Beschreibung der Umfrage"
                 rows={3}
               />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="maxVotes">Stimmen-Limit (optional)</Label>
-                <Input
-                  id="maxVotes"
-                  type="number"
-                  min={1}
-                  value={maxVotes}
-                  onChange={(e) => setMaxVotes(e.target.value)}
-                  placeholder="z.B. 100"
-                />
-              </div>
-              <div>
-                <Label htmlFor="expiresAt">Ablaufdatum (optional)</Label>
-                <Input
-                  id="expiresAt"
-                  type="datetime-local"
-                  value={expiresAtLocal}
-                  onChange={(e) => setExpiresAtLocal(e.target.value)}
-                />
-              </div>
             </div>
           </CardContent>
         </Card>

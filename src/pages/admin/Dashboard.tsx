@@ -144,8 +144,6 @@ const Dashboard = () => {
           description: duplicateSurvey.description,
           created_by: user.id,
           is_active: duplicateSurvey.is_active,
-          max_votes: duplicateSurvey.max_votes ?? null,
-          expires_at: duplicateSurvey.expires_at ?? null,
         })
         .select('*')
         .single();
