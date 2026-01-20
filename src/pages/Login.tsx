@@ -26,6 +26,9 @@ const Login = () => {
             </div>
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Umfrage-App</h1>
             <p className="text-gray-600">Melden Sie sich an, um Umfragen zu erstellen</p>
+            <p className="text-sm text-gray-500 mt-2">
+              Nur Administratoren können Umfragen erstellen
+            </p>
           </div>
           
           <Auth

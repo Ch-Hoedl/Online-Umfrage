@@ -10,6 +10,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/admin/Dashboard";
 import CreateSurvey from "./pages/admin/CreateSurvey";
 import Results from "./pages/admin/Results";
+import UserManagement from "./pages/admin/UserManagement";
 import SurveyPage from "./pages/Survey";
 import NotFound from "./pages/NotFound";
 
@@ -55,6 +56,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <Results />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <ProtectedRoute>
+                  <UserManagement />
                 </ProtectedRoute>
               }
             />

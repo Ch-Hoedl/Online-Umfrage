@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
+import { Profile } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -23,8 +24,36 @@ const CreateSurvey = () => {
   const [description, setDescription] = useState('');
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
+  const [userProfile, setUserProfile] = useState<Profile | null>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
+
+  useEffect(() => {
+    loadUserProfile();
+  }, []);
+
+  const loadUserProfile = async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+      setUserProfile(data);
+
+      if (data.role === 'user') {
+        toast.error('Sie haben keine Berechtigung, Umfragen zu erstellen');
+        navigate('/admin');
+      }
+    } catch (error) {
+      toast.error('Fehler beim Laden des Benutzerprofils');
+      navigate('/admin');
+    }
+  };
 
   const addQuestion = () => {
     setQuestions([

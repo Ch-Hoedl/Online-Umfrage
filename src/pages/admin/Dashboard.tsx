@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Survey } from '@/integrations/supabase/types';
+import { Survey, Profile } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, BarChart3, LogOut, Eye, Trash2, Edit } from 'lucide-react';
+import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import {
@@ -22,12 +22,36 @@ const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [userProfile, setUserProfile] = useState<Profile | null>(null);
   const navigate = useNavigate();
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
 
   useEffect(() => {
+    loadUserProfile();
     loadSurveys();
   }, []);
+
+  const loadUserProfile = async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+      setUserProfile(data);
+
+      if (data.role === 'user') {
+        toast.error('Sie haben keine Berechtigung, Umfragen zu erstellen');
+        signOut();
+      }
+    } catch (error) {
+      toast.error('Fehler beim Laden des Benutzerprofils');
+    }
+  };
 
   const loadSurveys = async () => {
     try {
@@ -87,6 +111,12 @@ const Dashboard = () => {
             </div>
           </div>
           <div className="flex gap-3">
+            {userProfile?.role === 'super_admin' && (
+              <Button onClick={() => navigate('/admin/users')} variant="outline" size="lg">
+                <Users className="w-5 h-5 mr-2" />
+                Benutzer
+              </Button>
+            )}
             <Button onClick={() => navigate('/admin/create')} size="lg" className="bg-blue-600 hover:bg-blue-700">
               <Plus className="w-5 h-5 mr-2" />
               Neue Umfrage
