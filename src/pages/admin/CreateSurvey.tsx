@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Trash2, ArrowLeft, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
+import { encodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const META_PREFIX = '__dyad_meta__:';
 
@@ -184,7 +185,11 @@ const CreateSurvey = () => {
         }
       }
 
-      if (question.question_type !== 'rating' && question.question_type !== 'text' && question.options.some((o) => !o.text.trim())) {
+      if (
+        question.question_type !== 'rating' &&
+        question.question_type !== 'text' &&
+        question.options.some((o) => !o.text.trim())
+      ) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein');
         return;
       }
@@ -193,14 +198,19 @@ const CreateSurvey = () => {
     setSaving(true);
 
     try {
+      // Supabase-DB hat in dieser App aktuell keine Spalten expires_at/max_votes.
+      // Wir speichern die Werte daher in der description als Meta.
+      const descriptionWithMeta = encodeDescriptionWithMeta(description, {
+        max_votes: parsedMaxVotes,
+        expires_at: expiresAt,
+      });
+
       const { data: survey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
           title,
-          description,
+          description: descriptionWithMeta,
           created_by: user?.id,
-          max_votes: parsedMaxVotes,
-          expires_at: expiresAt,
         })
         .select()
         .single();
@@ -209,12 +219,15 @@ const CreateSurvey = () => {
 
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        const dbQuestionType: Exclude<Question['question_type'], 'text'> =
+          question.question_type === 'text' ? 'multiple' : question.question_type;
+
         const { data: questionData, error: questionError } = await supabase
           .from('questions')
           .insert({
             survey_id: survey.id,
             question_text: question.question_text,
-            question_type: question.question_type,
+            question_type: dbQuestionType,
             order_index: i,
           })
           .select()
@@ -241,7 +254,7 @@ const CreateSurvey = () => {
             .insert({
               question_id: questionData.id,
               option_text: buildTextMetaOption(maxAnswers),
-              order_index: -1,
+              order_index: 9999,
             });
 
           if (metaOptionError) throw metaOptionError;

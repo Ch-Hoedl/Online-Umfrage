@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { decodeDescriptionWithMeta, encodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
@@ -76,7 +77,18 @@ const Dashboard = () => {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setSurveys(data || []);
+
+      const normalized = (data || []).map((s: any) => {
+        const decoded = decodeDescriptionWithMeta(s.description);
+        return {
+          ...s,
+          description: decoded.description,
+          max_votes: s.max_votes ?? decoded.meta.max_votes ?? null,
+          expires_at: s.expires_at ?? decoded.meta.expires_at ?? null,
+        } as Survey;
+      });
+
+      setSurveys(normalized);
     } catch (error) {
       toast.error('Fehler beim Laden der Umfragen');
     } finally {
@@ -136,12 +148,17 @@ const Dashboard = () => {
     setDuplicating(true);
 
     try {
+      const descriptionWithMeta = encodeDescriptionWithMeta(duplicateSurvey.description, {
+        max_votes: duplicateSurvey.max_votes ?? null,
+        expires_at: duplicateSurvey.expires_at ?? null,
+      });
+
       // 1) Survey kopieren
       const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
           title,
-          description: duplicateSurvey.description,
+          description: descriptionWithMeta,
           created_by: user.id,
           is_active: duplicateSurvey.is_active,
         })
@@ -168,7 +185,7 @@ const Dashboard = () => {
           .insert({
             survey_id: newSurvey.id,
             question_text: q.question_text,
-            question_type: q.question_type,
+            question_type: (q.question_type === 'text' ? 'multiple' : q.question_type) as any,
             order_index: q.order_index,
           })
           .select('*')

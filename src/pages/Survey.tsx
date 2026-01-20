@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
+import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
 const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
@@ -91,13 +92,26 @@ const SurveyPage = () => {
         .single();
 
       if (surveyError) throw surveyError;
-      setSurvey(surveyData);
 
-      const isExpired = !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
+      // expires_at/max_votes liegen in dieser App in der description als Meta
+      const decoded = decodeDescriptionWithMeta(surveyData.description);
+      const expiresAt = surveyData.expires_at ?? decoded.meta.expires_at ?? null;
+      const maxVotes = surveyData.max_votes ?? decoded.meta.max_votes ?? null;
+
+      const normalizedSurvey: Survey = {
+        ...surveyData,
+        description: decoded.description,
+        expires_at: expiresAt,
+        max_votes: maxVotes,
+      };
+
+      setSurvey(normalizedSurvey);
+
+      const isExpired = !!expiresAt && new Date(expiresAt).getTime() <= Date.now();
       setExpired(isExpired);
 
       // Schnell-Check: wenn wir lokal schon markiert haben, direkt sperren.
-      setAlreadyVoted(hasVotedLocally(surveyData.id));
+      setAlreadyVoted(hasVotedLocally(normalizedSurvey.id));
 
       const { data: questionsData, error: questionsError } = await supabase
         .from('questions')
@@ -127,10 +141,9 @@ const SurveyPage = () => {
         // Server-seitig prüfen (zusätzlich zur lokalen Sperre)
         if (participants.has(deviceId)) {
           setAlreadyVoted(true);
-          markVotedLocally(surveyData.id);
+          markVotedLocally(normalizedSurvey.id);
         }
 
-        const maxVotes = surveyData.max_votes ?? null;
         setLimitReached(!!maxVotes && participants.size >= maxVotes);
       } else {
         setParticipantCount(0);
@@ -169,6 +182,10 @@ const SurveyPage = () => {
     const meta = (options[questionId] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
     const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
     return parsed && parsed >= 1 ? parsed : 1;
+  };
+
+  const isTextQuestion = (questionId: string) => {
+    return (options[questionId] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
   };
 
   const getVisibleOptions = (questionId: string) => {
@@ -255,7 +272,7 @@ const SurveyPage = () => {
     }
 
     for (const question of questions) {
-      if (question.question_type === 'text') {
+      if (isTextQuestion(question.id)) {
         const max = getTextMaxAnswers(question.id);
         const terms = (answers[question.id] || [])
           .slice(0, max)
@@ -306,7 +323,7 @@ const SurveyPage = () => {
       }
 
       for (const question of questions) {
-        if (question.question_type === 'text') {
+        if (isTextQuestion(question.id)) {
           const max = getTextMaxAnswers(question.id);
           const terms = (answers[question.id] || [])
             .slice(0, max)
@@ -419,7 +436,8 @@ const SurveyPage = () => {
         <div className="space-y-6">
           {questions.map((question, index) => {
             const visibleOptions = getVisibleOptions(question.id);
-            const textMax = question.question_type === 'text' ? getTextMaxAnswers(question.id) : 0;
+            const textQuestion = isTextQuestion(question.id);
+            const textMax = textQuestion ? getTextMaxAnswers(question.id) : 0;
 
             return (
               <Card key={question.id} className={!canVote ? 'opacity-75' : ''}>
@@ -428,14 +446,14 @@ const SurveyPage = () => {
                     {index + 1}. {question.question_text}
                   </CardTitle>
                   <CardDescription>
-                    {question.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                    {question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                    {question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
-                    {question.question_type === 'text' && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
+                    {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
+                    {!textQuestion && question.question_type === 'single' && 'Wählen Sie eine Antwort'}
+                    {!textQuestion && question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
+                    {!textQuestion && question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {question.question_type === 'single' && (
+                  {!textQuestion && question.question_type === 'single' && (
                     <RadioGroup
                       value={answers[question.id]?.[0] || ''}
                       onValueChange={(value) => handleSingleChoice(question.id, value)}
@@ -451,7 +469,7 @@ const SurveyPage = () => {
                     </RadioGroup>
                   )}
 
-                  {question.question_type === 'multiple' && (
+                  {!textQuestion && question.question_type === 'multiple' && (
                     <div className="space-y-3">
                       {visibleOptions.map((option) => (
                         <div key={option.id} className="flex items-center space-x-2">
@@ -471,7 +489,7 @@ const SurveyPage = () => {
                     </div>
                   )}
 
-                  {question.question_type === 'rating' && (
+                  {!textQuestion && question.question_type === 'rating' && (
                     <RadioGroup
                       value={answers[question.id]?.[0] || ''}
                       onValueChange={(value) => handleSingleChoice(question.id, value)}
@@ -494,7 +512,7 @@ const SurveyPage = () => {
                     </RadioGroup>
                   )}
 
-                  {question.question_type === 'text' && (
+                  {textQuestion && (
                     <div className="space-y-3">
                       {Array.from({ length: textMax }).map((_, idx) => (
                         <div key={idx} className="space-y-1">
