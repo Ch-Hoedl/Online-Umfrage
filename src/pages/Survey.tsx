@@ -59,7 +59,8 @@ const SurveyPage = () => {
       if (surveyError) throw surveyError;
       setSurvey(surveyData);
 
-      const isExpired = !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
+      const isExpired =
+        !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
       setExpired(isExpired);
 
       const { data: questionsData, error: questionsError } = await supabase
@@ -146,16 +147,53 @@ const SurveyPage = () => {
   const handleSubmit = async () => {
     if (!survey) return;
 
-    if (expired) {
-      toast.error('Diese Umfrage ist abgelaufen');
-      return;
-    }
-    if (limitReached) {
-      toast.error('Das Stimmen-Limit wurde erreicht');
-      return;
-    }
-    if (alreadyVoted) {
-      toast.error('Sie haben bereits an dieser Umfrage teilgenommen');
+    const participantId = getDeviceId();
+    const questionIds = questions.map((q) => q.id);
+
+    // Frische Checks beim Absenden (verhindert Doppel-Submit & berücksichtigt parallele Teilnehmer)
+    try {
+      if (survey.expires_at && new Date(survey.expires_at).getTime() <= Date.now()) {
+        setExpired(true);
+        toast.error('Diese Umfrage ist abgelaufen');
+        return;
+      }
+
+      if (questionIds.length > 0) {
+        const { data: existingVote, error: existingVoteError } = await supabase
+          .from('responses')
+          .select('id')
+          .eq('participant_id', participantId)
+          .in('question_id', questionIds)
+          .limit(1);
+
+        if (existingVoteError) throw existingVoteError;
+
+        if ((existingVote || []).length > 0) {
+          setAlreadyVoted(true);
+          toast.error('Sie haben bereits an dieser Umfrage teilgenommen');
+          return;
+        }
+
+        if (typeof survey.max_votes === 'number') {
+          const { data: respData, error: respError } = await supabase
+            .from('responses')
+            .select('participant_id')
+            .in('question_id', questionIds);
+
+          if (respError) throw respError;
+
+          const participants = new Set((respData || []).map((r) => r.participant_id));
+          setParticipantCount(participants.size);
+
+          if (participants.size >= survey.max_votes) {
+            setLimitReached(true);
+            toast.error('Das Stimmen-Limit wurde erreicht');
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      toast.error('Fehler beim Prüfen der Abstimmung');
       return;
     }
 
@@ -169,8 +207,6 @@ const SurveyPage = () => {
     setSubmitting(true);
 
     try {
-      const participantId = getDeviceId();
-
       for (const questionId in answers) {
         for (const optionId of answers[questionId]) {
           const { error } = await supabase.from('responses').insert({
@@ -324,7 +360,10 @@ const SurveyPage = () => {
                             className="mb-2"
                             disabled={!canVote}
                           />
-                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer text-lg font-semibold' : 'text-lg font-semibold'}>
+                          <Label
+                            htmlFor={option.id}
+                            className={canVote ? 'cursor-pointer text-lg font-semibold' : 'text-lg font-semibold'}
+                          >
                             {option.option_text}
                           </Label>
                         </div>
