@@ -4,6 +4,10 @@ export interface Survey {
   description: string | null;
   created_by: string;
   is_active: boolean;
+  /** Maximale Anzahl an Teilnehmern/Stimmen (null = kein Limit) */
+  max_votes: number | null;
+  /** Ablaufdatum/Zeitpunkt, ab dem nicht mehr abgestimmt werden kann */
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
@@ -9,6 +9,25 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
+
+const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
+const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
+
+function getDeviceId() {
+  const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+  if (existing) return existing;
+  const created = crypto.randomUUID();
+  localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+  return created;
+}
+
+function hasVotedLocally(surveyId: string) {
+  return localStorage.getItem(`${VOTED_SURVEY_PREFIX}${surveyId}`) === '1';
+}
+
+function markVotedLocally(surveyId: string) {
+  localStorage.setItem(`${VOTED_SURVEY_PREFIX}${surveyId}`, '1');
+}
 
 const SurveyPage = () => {
   const { id } = useParams();
@@ -21,11 +40,23 @@ const SurveyPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
+  const [participantCount, setParticipantCount] = useState(0);
+  const [alreadyVoted, setAlreadyVoted] = useState(false);
+  const [limitReached, setLimitReached] = useState(false);
+  const [expired, setExpired] = useState(false);
+
+  const canVote = useMemo(() => {
+    return !submitting && !submitted && !alreadyVoted && !limitReached && !expired;
+  }, [alreadyVoted, expired, limitReached, submitted, submitting]);
+
   useEffect(() => {
     loadSurvey();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const loadSurvey = async () => {
+    setLoading(true);
+
     try {
       const { data: surveyData, error: surveyError } = await supabase
         .from('surveys')
@@ -37,6 +68,12 @@ const SurveyPage = () => {
       if (surveyError) throw surveyError;
       setSurvey(surveyData);
 
+      const isExpired = !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
+      setExpired(isExpired);
+
+      // Schnell-Check: wenn wir lokal schon markiert haben, direkt sperren.
+      setAlreadyVoted(hasVotedLocally(surveyData.id));
+
       const { data: questionsData, error: questionsError } = await supabase
         .from('questions')
         .select('*')
@@ -44,12 +81,41 @@ const SurveyPage = () => {
         .order('order_index');
 
       if (questionsError) throw questionsError;
-      setQuestions(questionsData || []);
+      const loadedQuestions = questionsData || [];
+      setQuestions(loadedQuestions);
+
+      const questionIds = loadedQuestions.map((q) => q.id);
+
+      // Antworten-Statistik: Limit prüfen + Geräte-Duplikate verhindern
+      if (questionIds.length > 0) {
+        const { data: respData, error: respError } = await supabase
+          .from('responses')
+          .select('participant_id')
+          .in('question_id', questionIds);
+
+        if (respError) throw respError;
+
+        const participants = new Set((respData || []).map((r) => r.participant_id));
+        setParticipantCount(participants.size);
+
+        const deviceId = getDeviceId();
+        // Server-seitig prüfen (zusätzlich zur lokalen Sperre)
+        if (participants.has(deviceId)) {
+          setAlreadyVoted(true);
+          markVotedLocally(surveyData.id);
+        }
+
+        const maxVotes = surveyData.max_votes ?? null;
+        setLimitReached(!!maxVotes && participants.size >= maxVotes);
+      } else {
+        setParticipantCount(0);
+        setLimitReached(false);
+      }
 
       const { data: optionsData, error: optionsError } = await supabase
         .from('options')
         .select('*')
-        .in('question_id', questionsData?.map((q) => q.id) || []);
+        .in('question_id', questionIds);
 
       if (optionsError) throw optionsError;
 
@@ -75,10 +141,12 @@ const SurveyPage = () => {
   };
 
   const handleSingleChoice = (questionId: string, optionId: string) => {
+    if (!canVote) return;
     setAnswers({ ...answers, [questionId]: [optionId] });
   };
 
   const handleMultipleChoice = (questionId: string, optionId: string, checked: boolean) => {
+    if (!canVote) return;
     const currentAnswers = answers[questionId] || [];
     if (checked) {
       setAnswers({ ...answers, [questionId]: [...currentAnswers, optionId] });
@@ -91,6 +159,21 @@ const SurveyPage = () => {
   };
 
   const handleSubmit = async () => {
+    if (!survey) return;
+
+    if (expired) {
+      toast.error('Diese Umfrage ist abgelaufen');
+      return;
+    }
+    if (limitReached) {
+      toast.error('Das Stimmen-Limit wurde erreicht');
+      return;
+    }
+    if (alreadyVoted || hasVotedLocally(survey.id)) {
+      toast.error('Sie haben bereits an dieser Umfrage teilgenommen');
+      return;
+    }
+
     for (const question of questions) {
       if (!answers[question.id] || answers[question.id].length === 0) {
         toast.error('Bitte beantworten Sie alle Fragen');
@@ -101,7 +184,33 @@ const SurveyPage = () => {
     setSubmitting(true);
 
     try {
-      const participantId = crypto.randomUUID();
+      const participantId = getDeviceId();
+
+      // Re-Check kurz vor dem Insert (reduziert Doppel-Abstimmungen bei mehreren Tabs)
+      const questionIds = questions.map((q) => q.id);
+      if (questionIds.length > 0) {
+        const { data: respData, error: respError } = await supabase
+          .from('responses')
+          .select('participant_id')
+          .in('question_id', questionIds);
+
+        if (respError) throw respError;
+
+        const participants = new Set((respData || []).map((r) => r.participant_id));
+        if (participants.has(participantId)) {
+          setAlreadyVoted(true);
+          markVotedLocally(survey.id);
+          toast.error('Sie haben bereits an dieser Umfrage teilgenommen');
+          return;
+        }
+
+        const maxVotes = survey.max_votes ?? null;
+        if (maxVotes && participants.size >= maxVotes) {
+          setLimitReached(true);
+          toast.error('Das Stimmen-Limit wurde erreicht');
+          return;
+        }
+      }
 
       for (const questionId in answers) {
         for (const optionId of answers[questionId]) {
@@ -115,6 +224,7 @@ const SurveyPage = () => {
         }
       }
 
+      markVotedLocally(survey.id);
       setSubmitted(true);
       toast.success('Vielen Dank für Ihre Teilnahme!');
     } catch (error) {
@@ -161,6 +271,8 @@ const SurveyPage = () => {
     );
   }
 
+  const showClosedBanner = expired || limitReached || alreadyVoted;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
       <div className="container mx-auto px-4 max-w-3xl">
@@ -174,9 +286,25 @@ const SurveyPage = () => {
           )}
         </div>
 
+        {showClosedBanner && (
+          <Card className="mb-6 border-amber-200 bg-amber-50">
+            <CardContent className="pt-6">
+              {alreadyVoted && (
+                <p className="text-amber-900 font-medium">Sie haben bereits an dieser Umfrage teilgenommen.</p>
+              )}
+              {expired && (
+                <p className="text-amber-900 font-medium">Diese Umfrage ist abgelaufen und kann nicht mehr beantwortet werden.</p>
+              )}
+              {limitReached && (
+                <p className="text-amber-900 font-medium">Das Stimmen-Limit wurde erreicht. Es können keine weiteren Antworten abgegeben werden.</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         <div className="space-y-6">
           {questions.map((question, index) => (
-            <Card key={question.id}>
+            <Card key={question.id} className={!canVote ? 'opacity-75' : ''}>
               <CardHeader>
                 <CardTitle className="text-xl">
                   {index + 1}. {question.question_text}
@@ -195,8 +323,8 @@ const SurveyPage = () => {
                   >
                     {options[question.id]?.map((option) => (
                       <div key={option.id} className="flex items-center space-x-2 mb-3">
-                        <RadioGroupItem value={option.id} id={option.id} />
-                        <Label htmlFor={option.id} className="cursor-pointer flex-1">
+                        <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} />
+                        <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
                           {option.option_text}
                         </Label>
                       </div>
@@ -210,12 +338,13 @@ const SurveyPage = () => {
                       <div key={option.id} className="flex items-center space-x-2">
                         <Checkbox
                           id={option.id}
+                          disabled={!canVote}
                           checked={answers[question.id]?.includes(option.id) || false}
                           onCheckedChange={(checked) =>
                             handleMultipleChoice(question.id, option.id, checked as boolean)
                           }
                         />
-                        <Label htmlFor={option.id} className="cursor-pointer flex-1">
+                        <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
                           {option.option_text}
                         </Label>
                       </div>
@@ -231,8 +360,13 @@ const SurveyPage = () => {
                     <div className="flex gap-4 justify-center">
                       {options[question.id]?.map((option) => (
                         <div key={option.id} className="flex flex-col items-center">
-                          <RadioGroupItem value={option.id} id={option.id} className="mb-2" />
-                          <Label htmlFor={option.id} className="cursor-pointer text-lg font-semibold">
+                          <RadioGroupItem
+                            value={option.id}
+                            id={option.id}
+                            className="mb-2"
+                            disabled={!canVote}
+                          />
+                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer text-lg font-semibold' : 'text-lg font-semibold'}>
                             {option.option_text}
                           </Label>
                         </div>
@@ -245,10 +379,15 @@ const SurveyPage = () => {
           ))}
         </div>
 
-        <div className="mt-8">
+        <div className="mt-8 space-y-2">
+          {typeof survey.max_votes === 'number' && (
+            <p className="text-sm text-gray-600 text-center">
+              Teilnehmer: {participantCount}/{survey.max_votes}
+            </p>
+          )}
           <Button
             onClick={handleSubmit}
-            disabled={submitting}
+            disabled={!canVote}
             className="w-full bg-blue-600 hover:bg-blue-700 text-lg py-6"
           >
             {submitting ? 'Wird gesendet...' : 'Antworten absenden'}
