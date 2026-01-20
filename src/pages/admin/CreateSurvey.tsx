@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Profile } from '@/integrations/supabase/types';
+import { Profile, Question } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,11 +12,18 @@ import { Plus, Trash2, ArrowLeft, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
+const META_PREFIX = '__dyad_meta__:';
+
+function buildTextMetaOption(maxAnswers: number) {
+  return `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
+}
+
 interface QuestionData {
   id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating';
+  question_type: Question['question_type'];
   options: { id: string; text: string }[];
+  text_max_answers: number;
 }
 
 const CreateSurvey = () => {
@@ -65,6 +72,7 @@ const CreateSurvey = () => {
         id: crypto.randomUUID(),
         question_text: '',
         question_type: 'single',
+        text_max_answers: 3,
         options: [
           { id: crypto.randomUUID(), text: '' },
           { id: crypto.randomUUID(), text: '' },
@@ -79,9 +87,15 @@ const CreateSurvey = () => {
 
   const updateQuestion = (questionId: string, field: string, value: any) => {
     setQuestions(
-      questions.map((q) =>
-        q.id === questionId ? { ...q, [field]: value } : q
-      )
+      questions.map((q) => {
+        if (q.id !== questionId) return q;
+
+        const next = { ...q, [field]: value } as QuestionData;
+        if (field === 'question_type' && value === 'text' && !next.text_max_answers) {
+          next.text_max_answers = 3;
+        }
+        return next;
+      })
     );
   };
 
@@ -161,7 +175,16 @@ const CreateSurvey = () => {
         toast.error('Alle Fragen müssen einen Text haben');
         return;
       }
-      if (question.question_type !== 'rating' && question.options.some((o) => !o.text.trim())) {
+
+      if (question.question_type === 'text') {
+        const maxAnswers = Number(question.text_max_answers);
+        if (!Number.isFinite(maxAnswers) || maxAnswers < 1 || maxAnswers > 10) {
+          toast.error('Bei offenen Fragen muss „Max. Antworten“ zwischen 1 und 10 liegen');
+          return;
+        }
+      }
+
+      if (question.question_type !== 'rating' && question.question_type !== 'text' && question.options.some((o) => !o.text.trim())) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein');
         return;
       }
@@ -211,6 +234,17 @@ const CreateSurvey = () => {
 
             if (optionError) throw optionError;
           }
+        } else if (question.question_type === 'text') {
+          const maxAnswers = Number(question.text_max_answers);
+          const { error: metaOptionError } = await supabase
+            .from('options')
+            .insert({
+              question_id: questionData.id,
+              option_text: buildTextMetaOption(maxAnswers),
+              order_index: -1,
+            });
+
+          if (metaOptionError) throw metaOptionError;
         } else {
           for (let j = 0; j < question.options.length; j++) {
             const { error: optionError } = await supabase
@@ -342,11 +376,37 @@ const CreateSurvey = () => {
                       <SelectItem value="single">Einfachauswahl</SelectItem>
                       <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
                       <SelectItem value="rating">Bewertung (1-5)</SelectItem>
+                      <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
-                {question.question_type !== 'rating' && (
+                {question.question_type === 'text' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label>Max. Antworten</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={question.text_max_answers}
+                        onChange={(e) =>
+                          updateQuestion(
+                            question.id,
+                            'text_max_answers',
+                            Number.parseInt(e.target.value || '1', 10)
+                          )
+                        }
+                        placeholder="z.B. 3"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Teilnehmer können bis zu so viele Begriffe eingeben.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {question.question_type !== 'rating' && question.question_type !== 'text' && (
                   <div>
                     <Label>Antwortmöglichkeiten *</Label>
                     <div className="space-y-2 mt-2">
@@ -381,6 +441,12 @@ const CreateSurvey = () => {
                       </Button>
                     </div>
                   </div>
+                )}
+
+                {question.question_type === 'rating' && (
+                  <p className="text-sm text-gray-600">
+                    Für Bewertungen werden automatisch die Optionen 1–5 angelegt.
+                  </p>
                 )}
               </CardContent>
             </Card>

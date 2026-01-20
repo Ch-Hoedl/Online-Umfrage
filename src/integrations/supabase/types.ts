@@ -16,7 +16,7 @@ export interface Question {
   id: string;
   survey_id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating';
+  question_type: 'single' | 'multiple' | 'rating' | 'text';
   order_index: number;
   created_at: string;
 }

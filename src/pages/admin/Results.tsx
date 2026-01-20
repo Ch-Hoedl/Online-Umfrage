@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option, Response } from '@/integrations/supabase/types';
@@ -7,11 +7,30 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, QrCode, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
+const META_PREFIX = '__dyad_meta__:';
+
+function isMetaOption(optionText: string) {
+  return optionText.startsWith(META_PREFIX);
+}
 
 const Results = () => {
   const { id } = useParams();
@@ -79,13 +98,33 @@ const Results = () => {
   };
 
   const getChartData = (questionId: string) => {
-    const questionOptions = options[questionId] || [];
+    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
     const questionResponses = responses.filter((r) => r.question_id === questionId);
 
     return questionOptions.map((option) => ({
       name: option.option_text,
       value: questionResponses.filter((r) => r.option_id === option.id).length,
     }));
+  };
+
+  const getWordCloud = (questionId: string) => {
+    const questionResponses = responses.filter((r) => r.question_id === questionId);
+    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
+
+    const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
+    const counts = new Map<string, number>();
+
+    for (const r of questionResponses) {
+      const text = idToText.get(r.option_id);
+      if (!text) continue;
+      counts.set(text, (counts.get(text) || 0) + 1);
+    }
+
+    const items = Array.from(counts.entries())
+      .map(([text, count]) => ({ text, count }))
+      .sort((a, b) => b.count - a.count);
+
+    return items;
   };
 
   const copyToClipboard = () => {
@@ -123,9 +162,7 @@ const Results = () => {
           </Button>
           <div className="flex-1">
             <h1 className="text-3xl font-bold text-gray-900">{survey.title}</h1>
-            <p className="text-gray-600">
-              {totalResponses} {totalResponses === 1 ? 'Teilnehmer' : 'Teilnehmer'}
-            </p>
+            <p className="text-gray-600">{totalResponses} Teilnehmer</p>
           </div>
           <Dialog>
             <DialogTrigger asChild>
@@ -162,8 +199,42 @@ const Results = () => {
 
         <div className="space-y-6">
           {questions.map((question) => {
+            if (question.question_type === 'text') {
+              const cloud = getWordCloud(question.id);
+              const max = Math.max(1, ...cloud.map((c) => c.count));
+
+              return (
+                <Card key={question.id}>
+                  <CardHeader>
+                    <CardTitle>{question.question_text}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {cloud.length === 0 ? (
+                      <p className="text-sm text-gray-600">Noch keine Antworten.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {cloud.map((item) => {
+                          const size = 12 + Math.round((item.count / max) * 22);
+                          return (
+                            <span
+                              key={item.text}
+                              className="px-3 py-1 rounded-full bg-white border text-gray-900"
+                              style={{ fontSize: `${size}px` }}
+                              title={`${item.count}×`}
+                            >
+                              {item.text}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            }
+
             const chartData = getChartData(question.id);
-            
+
             return (
               <Card key={question.id}>
                 <CardHeader>
@@ -176,7 +247,7 @@ const Results = () => {
                       <TabsTrigger value="line">Liniendiagramm</TabsTrigger>
                       <TabsTrigger value="pie">Kreisdiagramm</TabsTrigger>
                     </TabsList>
-                    
+
                     <TabsContent value="bar" className="mt-6">
                       <ResponsiveContainer width="100%" height={300}>
                         <BarChart data={chartData}>
@@ -189,7 +260,7 @@ const Results = () => {
                         </BarChart>
                       </ResponsiveContainer>
                     </TabsContent>
-                    
+
                     <TabsContent value="line" className="mt-6">
                       <ResponsiveContainer width="100%" height={300}>
                         <LineChart data={chartData}>
@@ -202,7 +273,7 @@ const Results = () => {
                         </LineChart>
                       </ResponsiveContainer>
                     </TabsContent>
-                    
+
                     <TabsContent value="pie" className="mt-6">
                       <ResponsiveContainer width="100%" height={300}>
                         <PieChart>
@@ -216,7 +287,7 @@ const Results = () => {
                             fill="#8884d8"
                             dataKey="value"
                           >
-                            {chartData.map((entry, index) => (
+                            {chartData.map((_, index) => (
                               <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                             ))}
                           </Pie>

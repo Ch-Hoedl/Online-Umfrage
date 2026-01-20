@@ -7,11 +7,32 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
 
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
 const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
+
+const META_PREFIX = '__dyad_meta__:';
+
+function isMetaOption(optionText: string) {
+  return optionText.startsWith(META_PREFIX);
+}
+
+function parseTextMaxAnswers(optionText: string): number | null {
+  if (!isMetaOption(optionText)) return null;
+  try {
+    const raw = optionText.slice(META_PREFIX.length);
+    const parsed = JSON.parse(raw);
+    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') {
+      return parsed.maxAnswers;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 function getDeviceId() {
   const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
@@ -27,6 +48,10 @@ function hasVotedLocally(surveyId: string) {
 
 function markVotedLocally(surveyId: string) {
   localStorage.setItem(`${VOTED_SURVEY_PREFIX}${surveyId}`, '1');
+}
+
+function normalizeTextTerm(value: string) {
+  return value.trim().replace(/\s+/g, ' ');
 }
 
 const SurveyPage = () => {
@@ -140,6 +165,16 @@ const SurveyPage = () => {
     }
   };
 
+  const getTextMaxAnswers = (questionId: string) => {
+    const meta = (options[questionId] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
+    const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
+    return parsed && parsed >= 1 ? parsed : 1;
+  };
+
+  const getVisibleOptions = (questionId: string) => {
+    return (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
+  };
+
   const handleSingleChoice = (questionId: string, optionId: string) => {
     if (!canVote) return;
     setAnswers({ ...answers, [questionId]: [optionId] });
@@ -156,6 +191,51 @@ const SurveyPage = () => {
         [questionId]: currentAnswers.filter((id) => id !== optionId),
       });
     }
+  };
+
+  const handleTextChange = (questionId: string, index: number, value: string) => {
+    if (!canVote) return;
+    const current = answers[questionId] || [];
+    const next = current.slice();
+    while (next.length <= index) next.push('');
+    next[index] = value;
+    setAnswers({ ...answers, [questionId]: next });
+  };
+
+  const getOrCreateTextOptionId = async (questionId: string, term: string) => {
+    const normalized = normalizeTextTerm(term);
+    if (!normalized) throw new Error('empty term');
+
+    // 1) In bereits geladenen Optionen suchen
+    const existingInState = getVisibleOptions(questionId).find(
+      (o) => o.option_text.toLowerCase() === normalized.toLowerCase()
+    );
+    if (existingInState) return existingInState.id;
+
+    // 2) Server-seitig prüfen (falls zwischenzeitlich angelegt)
+    const { data: existing, error: existingError } = await supabase
+      .from('options')
+      .select('*')
+      .eq('question_id', questionId)
+      .eq('option_text', normalized)
+      .maybeSingle();
+
+    if (existingError) throw existingError;
+    if (existing) return (existing as Option).id;
+
+    // 3) Neu anlegen
+    const { data: created, error: createError } = await supabase
+      .from('options')
+      .insert({
+        question_id: questionId,
+        option_text: normalized,
+        order_index: 0,
+      })
+      .select('*')
+      .single();
+
+    if (createError) throw createError;
+    return (created as Option).id;
   };
 
   const handleSubmit = async () => {
@@ -175,6 +255,19 @@ const SurveyPage = () => {
     }
 
     for (const question of questions) {
+      if (question.question_type === 'text') {
+        const max = getTextMaxAnswers(question.id);
+        const terms = (answers[question.id] || [])
+          .slice(0, max)
+          .map(normalizeTextTerm)
+          .filter(Boolean);
+        if (terms.length === 0) {
+          toast.error('Bitte beantworten Sie alle Fragen');
+          return;
+        }
+        continue;
+      }
+
       if (!answers[question.id] || answers[question.id].length === 0) {
         toast.error('Bitte beantworten Sie alle Fragen');
         return;
@@ -212,10 +305,31 @@ const SurveyPage = () => {
         }
       }
 
-      for (const questionId in answers) {
-        for (const optionId of answers[questionId]) {
+      for (const question of questions) {
+        if (question.question_type === 'text') {
+          const max = getTextMaxAnswers(question.id);
+          const terms = (answers[question.id] || [])
+            .slice(0, max)
+            .map(normalizeTextTerm)
+            .filter(Boolean);
+
+          for (const term of terms) {
+            const optionId = await getOrCreateTextOptionId(question.id, term);
+            const { error } = await supabase.from('responses').insert({
+              question_id: question.id,
+              option_id: optionId,
+              participant_id: participantId,
+            });
+            if (error) throw error;
+          }
+
+          continue;
+        }
+
+        const selectedOptionIds = answers[question.id] || [];
+        for (const optionId of selectedOptionIds) {
           const { error } = await supabase.from('responses').insert({
-            question_id: questionId,
+            question_id: question.id,
             option_id: optionId,
             participant_id: participantId,
           });
@@ -303,80 +417,105 @@ const SurveyPage = () => {
         )}
 
         <div className="space-y-6">
-          {questions.map((question, index) => (
-            <Card key={question.id} className={!canVote ? 'opacity-75' : ''}>
-              <CardHeader>
-                <CardTitle className="text-xl">
-                  {index + 1}. {question.question_text}
-                </CardTitle>
-                <CardDescription>
-                  {question.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                  {question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                  {question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {question.question_type === 'single' && (
-                  <RadioGroup
-                    value={answers[question.id]?.[0] || ''}
-                    onValueChange={(value) => handleSingleChoice(question.id, value)}
-                  >
-                    {options[question.id]?.map((option) => (
-                      <div key={option.id} className="flex items-center space-x-2 mb-3">
-                        <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} />
-                        <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
-                          {option.option_text}
-                        </Label>
-                      </div>
-                    ))}
-                  </RadioGroup>
-                )}
+          {questions.map((question, index) => {
+            const visibleOptions = getVisibleOptions(question.id);
+            const textMax = question.question_type === 'text' ? getTextMaxAnswers(question.id) : 0;
 
-                {question.question_type === 'multiple' && (
-                  <div className="space-y-3">
-                    {options[question.id]?.map((option) => (
-                      <div key={option.id} className="flex items-center space-x-2">
-                        <Checkbox
-                          id={option.id}
-                          disabled={!canVote}
-                          checked={answers[question.id]?.includes(option.id) || false}
-                          onCheckedChange={(checked) =>
-                            handleMultipleChoice(question.id, option.id, checked as boolean)
-                          }
-                        />
-                        <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
-                          {option.option_text}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                )}
+            return (
+              <Card key={question.id} className={!canVote ? 'opacity-75' : ''}>
+                <CardHeader>
+                  <CardTitle className="text-xl">
+                    {index + 1}. {question.question_text}
+                  </CardTitle>
+                  <CardDescription>
+                    {question.question_type === 'single' && 'Wählen Sie eine Antwort'}
+                    {question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
+                    {question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                    {question.question_type === 'text' && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {question.question_type === 'single' && (
+                    <RadioGroup
+                      value={answers[question.id]?.[0] || ''}
+                      onValueChange={(value) => handleSingleChoice(question.id, value)}
+                    >
+                      {visibleOptions.map((option) => (
+                        <div key={option.id} className="flex items-center space-x-2 mb-3">
+                          <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} />
+                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
+                            {option.option_text}
+                          </Label>
+                        </div>
+                      ))}
+                    </RadioGroup>
+                  )}
 
-                {question.question_type === 'rating' && (
-                  <RadioGroup
-                    value={answers[question.id]?.[0] || ''}
-                    onValueChange={(value) => handleSingleChoice(question.id, value)}
-                  >
-                    <div className="flex gap-4 justify-center">
-                      {options[question.id]?.map((option) => (
-                        <div key={option.id} className="flex flex-col items-center">
-                          <RadioGroupItem
-                            value={option.id}
+                  {question.question_type === 'multiple' && (
+                    <div className="space-y-3">
+                      {visibleOptions.map((option) => (
+                        <div key={option.id} className="flex items-center space-x-2">
+                          <Checkbox
                             id={option.id}
-                            className="mb-2"
                             disabled={!canVote}
+                            checked={answers[question.id]?.includes(option.id) || false}
+                            onCheckedChange={(checked) =>
+                              handleMultipleChoice(question.id, option.id, checked as boolean)
+                            }
                           />
-                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer text-lg font-semibold' : 'text-lg font-semibold'}>
+                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
                             {option.option_text}
                           </Label>
                         </div>
                       ))}
                     </div>
-                  </RadioGroup>
-                )}
-              </CardContent>
-            </Card>
-          ))}
+                  )}
+
+                  {question.question_type === 'rating' && (
+                    <RadioGroup
+                      value={answers[question.id]?.[0] || ''}
+                      onValueChange={(value) => handleSingleChoice(question.id, value)}
+                    >
+                      <div className="flex gap-4 justify-center">
+                        {visibleOptions.map((option) => (
+                          <div key={option.id} className="flex flex-col items-center">
+                            <RadioGroupItem
+                              value={option.id}
+                              id={option.id}
+                              className="mb-2"
+                              disabled={!canVote}
+                            />
+                            <Label htmlFor={option.id} className={canVote ? 'cursor-pointer text-lg font-semibold' : 'text-lg font-semibold'}>
+                              {option.option_text}
+                            </Label>
+                          </div>
+                        ))}
+                      </div>
+                    </RadioGroup>
+                  )}
+
+                  {question.question_type === 'text' && (
+                    <div className="space-y-3">
+                      {Array.from({ length: textMax }).map((_, idx) => (
+                        <div key={idx} className="space-y-1">
+                          <Label>Antwort {idx + 1}</Label>
+                          <Input
+                            value={answers[question.id]?.[idx] || ''}
+                            onChange={(e) => handleTextChange(question.id, idx, e.target.value)}
+                            placeholder="z.B. Service, Preis, Qualität"
+                            disabled={!canVote}
+                          />
+                        </div>
+                      ))}
+                      <p className="text-xs text-gray-500">
+                        Tipp: Kurze Begriffe funktionieren am besten für die Begriffswolke.
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
 
         <div className="mt-8 space-y-2">
