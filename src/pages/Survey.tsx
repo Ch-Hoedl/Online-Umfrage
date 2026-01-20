@@ -54,13 +54,18 @@ const SurveyPage = () => {
       if (optionsError) throw optionsError;
 
       const optionsByQuestion: { [key: string]: Option[] } = {};
-      optionsData?.forEach((option) => {
-        if (!optionsByQuestion[option.question_id]) {
-          optionsByQuestion[option.question_id] = [];
+      optionsData?.forEach((opt) => {
+        if (!optionsByQuestion[opt.question_id]) {
+          optionsByQuestion[opt.question_id] = [];
         }
-        optionsByQuestion[option.question_id].push(option);
+        optionsByQuestion[opt.question_id].push(opt);
       });
-      optionsByQuestion[option.question_id].sort((a, b) => a.order_index - b.order_index);
+
+      // Sortiere Optionen innerhalb jeder Frage (wichtig, damit Antworten korrekt angezeigt/ausgewählt werden können)
+      Object.keys(optionsByQuestion).forEach((questionId) => {
+        optionsByQuestion[questionId].sort((a, b) => a.order_index - b.order_index);
+      });
+
       setOptions(optionsByQuestion);
     } catch (error) {
       toast.error('Umfrage nicht gefunden oder nicht aktiv');
