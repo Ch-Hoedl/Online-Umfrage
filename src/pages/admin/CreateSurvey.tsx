@@ -15,7 +15,8 @@ import { useAuth } from '@/contexts/AuthContext';
 interface QuestionData {
   id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating';
+  question_type: 'single' | 'multiple' | 'rating' | 'open';
+  expected_responses?: number;
   options: { id: string; text: string }[];
 }
 
@@ -62,6 +63,7 @@ const CreateSurvey = () => {
         id: crypto.randomUUID(),
         question_text: '',
         question_type: 'single',
+        expected_responses: 1,
         options: [
           { id: crypto.randomUUID(), text: '' },
           { id: crypto.randomUUID(), text: '' },
@@ -133,7 +135,7 @@ const CreateSurvey = () => {
         toast.error('Alle Fragen müssen einen Text haben');
         return;
       }
-      if (question.question_type !== 'rating' && question.options.some((o) => !o.text.trim())) {
+      if (question.question_type !== 'rating' && question.question_type !== 'open' && question.options.some((o) => !o.text.trim())) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein');
         return;
       }
@@ -163,6 +165,7 @@ const CreateSurvey = () => {
             question_text: question.question_text,
             question_type: question.question_type,
             order_index: i,
+            expected_responses: question.question_type === 'open' ? question.expected_responses : null,
           })
           .select()
           .single();
@@ -181,7 +184,7 @@ const CreateSurvey = () => {
 
             if (optionError) throw optionError;
           }
-        } else {
+        } else if (question.question_type !== 'open') {
           for (let j = 0; j < question.options.length; j++) {
             const { error: optionError } = await supabase
               .from('options')
@@ -289,11 +292,31 @@ const CreateSurvey = () => {
                       <SelectItem value="single">Einfachauswahl</SelectItem>
                       <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
                       <SelectItem value="rating">Bewertung (1-5)</SelectItem>
+                      <SelectItem value="open">Offene Frage</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
-                {question.question_type !== 'rating' && (
+                {question.question_type === 'open' && (
+                  <div>
+                    <Label>Anzahl erwarteter Antworten</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={question.expected_responses || 1}
+                      onChange={(e) =>
+                        updateQuestion(question.id, 'expected_responses', parseInt(e.target.value) || 1)
+                      }
+                      placeholder="z.B. 3 für drei Begriffe"
+                    />
+                    <p className="text-sm text-gray-500 mt-1">
+                      Wie viele Eingabefelder sollen angezeigt werden?
+                    </p>
+                  </div>
+                )}
+
+                {question.question_type !== 'rating' && question.question_type !== 'open' && (
                   <div>
                     <Label>Antwortmöglichkeiten *</Label>
                     <div className="space-y-2 mt-2">

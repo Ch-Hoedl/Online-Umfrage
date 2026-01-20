@@ -1,22 +1,23 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
 
 const SurveyPage = () => {
   const { id } = useParams();
-  const navigate = useNavigate();
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
   const [answers, setAnswers] = useState<{ [key: string]: string[] }>({});
+  const [textAnswers, setTextAnswers] = useState<{ [key: string]: string[] }>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -46,6 +47,15 @@ const SurveyPage = () => {
       if (questionsError) throw questionsError;
       setQuestions(questionsData || []);
 
+      // Initialisiere textAnswers für offene Fragen
+      const initialTextAnswers: { [key: string]: string[] } = {};
+      questionsData?.forEach((q) => {
+        if (q.question_type === 'open') {
+          initialTextAnswers[q.id] = Array(q.expected_responses || 1).fill('');
+        }
+      });
+      setTextAnswers(initialTextAnswers);
+
       const { data: optionsData, error: optionsError } = await supabase
         .from('options')
         .select('*')
@@ -60,7 +70,12 @@ const SurveyPage = () => {
         }
         optionsByQuestion[option.question_id].push(option);
       });
-      optionsByQuestion[option.question_id].sort((a, b) => a.order_index - b.order_index);
+      
+      // Sortiere Optionen nach order_index
+      Object.keys(optionsByQuestion).forEach((questionId) => {
+        optionsByQuestion[questionId].sort((a, b) => a.order_index - b.order_index);
+      });
+      
       setOptions(optionsByQuestion);
     } catch (error) {
       toast.error('Umfrage nicht gefunden oder nicht aktiv');
@@ -85,11 +100,26 @@ const SurveyPage = () => {
     }
   };
 
+  const handleTextAnswer = (questionId: string, index: number, value: string) => {
+    const currentAnswers = [...(textAnswers[questionId] || [])];
+    currentAnswers[index] = value;
+    setTextAnswers({ ...textAnswers, [questionId]: currentAnswers });
+  };
+
   const handleSubmit = async () => {
     for (const question of questions) {
-      if (!answers[question.id] || answers[question.id].length === 0) {
-        toast.error('Bitte beantworten Sie alle Fragen');
-        return;
+      if (question.question_type === 'open') {
+        const texts = textAnswers[question.id] || [];
+        const filledTexts = texts.filter((t) => t.trim());
+        if (filledTexts.length === 0) {
+          toast.error('Bitte beantworten Sie alle Fragen');
+          return;
+        }
+      } else {
+        if (!answers[question.id] || answers[question.id].length === 0) {
+          toast.error('Bitte beantworten Sie alle Fragen');
+          return;
+        }
       }
     }
 
@@ -98,21 +128,39 @@ const SurveyPage = () => {
     try {
       const participantId = crypto.randomUUID();
 
-      for (const questionId in answers) {
-        for (const optionId of answers[questionId]) {
-          const { error } = await supabase.from('responses').insert({
-            question_id: questionId,
-            option_id: optionId,
-            participant_id: participantId,
-          });
+      for (const question of questions) {
+        if (question.question_type === 'open') {
+          const texts = textAnswers[question.id] || [];
+          const filledTexts = texts.filter((t) => t.trim());
+          
+          for (const text of filledTexts) {
+            const { error } = await supabase.from('responses').insert({
+              question_id: question.id,
+              option_id: null,
+              participant_id: participantId,
+              text_response: text,
+            });
 
-          if (error) throw error;
+            if (error) throw error;
+          }
+        } else {
+          const questionAnswers = answers[question.id] || [];
+          for (const optionId of questionAnswers) {
+            const { error } = await supabase.from('responses').insert({
+              question_id: question.id,
+              option_id: optionId,
+              participant_id: participantId,
+            });
+
+            if (error) throw error;
+          }
         }
       }
 
       setSubmitted(true);
       toast.success('Vielen Dank für Ihre Teilnahme!');
     } catch (error) {
+      console.error(error);
       toast.error('Fehler beim Absenden der Antworten');
     } finally {
       setSubmitting(false);
@@ -180,6 +228,7 @@ const SurveyPage = () => {
                   {question.question_type === 'single' && 'Wählen Sie eine Antwort'}
                   {question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
                   {question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                  {question.question_type === 'open' && 'Geben Sie Ihre Antwort(en) ein'}
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -234,6 +283,25 @@ const SurveyPage = () => {
                       ))}
                     </div>
                   </RadioGroup>
+                )}
+
+                {question.question_type === 'open' && (
+                  <div className="space-y-3">
+                    {Array.from({ length: question.expected_responses || 1 }).map((_, index) => (
+                      <div key={index}>
+                        <Label htmlFor={`${question.id}-${index}`} className="text-sm text-gray-600">
+                          Antwort {index + 1}
+                        </Label>
+                        <Input
+                          id={`${question.id}-${index}`}
+                          value={textAnswers[question.id]?.[index] || ''}
+                          onChange={(e) => handleTextAnswer(question.id, index, e.target.value)}
+                          placeholder={`Begriff ${index + 1} eingeben`}
+                          className="mt-1"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 )}
               </CardContent>
             </Card>

@@ -12,8 +12,9 @@ export interface Question {
   id: string;
   survey_id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating';
+  question_type: 'single' | 'multiple' | 'rating' | 'open';
   order_index: number;
+  expected_responses?: number;
   created_at: string;
 }
 
@@ -28,8 +29,9 @@ export interface Option {
 export interface Response {
   id: string;
   question_id: string;
-  option_id: string;
+  option_id: string | null;
   participant_id: string;
+  text_response?: string | null;
   created_at: string;
 }
 
