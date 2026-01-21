@@ -271,6 +271,7 @@ const SurveyPage = () => {
       return;
     }
 
+    // Validierung
     for (const question of questions) {
       if (isTextQuestion(question.id)) {
         const max = getTextMaxAnswers(question.id);
@@ -322,6 +323,7 @@ const SurveyPage = () => {
         }
       }
 
+      // Antworten speichern
       for (const question of questions) {
         if (isTextQuestion(question.id)) {
           const max = getTextMaxAnswers(question.id);
@@ -331,13 +333,21 @@ const SurveyPage = () => {
             .filter(Boolean);
 
           for (const term of terms) {
-            const optionId = await getOrCreateTextOptionId(question.id, term);
-            const { error } = await supabase.from('responses').insert({
-              question_id: question.id,
-              option_id: optionId,
-              participant_id: participantId,
-            });
-            if (error) throw error;
+            try {
+              const optionId = await getOrCreateTextOptionId(question.id, term);
+              const { error } = await supabase.from('responses').insert({
+                question_id: question.id,
+                option_id: optionId,
+                participant_id: participantId,
+              });
+              if (error) {
+                console.error('Error inserting text response:', error);
+                throw error;
+              }
+            } catch (err) {
+              console.error('Error processing text term:', term, err);
+              throw err;
+            }
           }
 
           continue;
@@ -351,7 +361,10 @@ const SurveyPage = () => {
             participant_id: participantId,
           });
 
-          if (error) throw error;
+          if (error) {
+            console.error('Error inserting response:', error);
+            throw error;
+          }
         }
       }
 
@@ -359,7 +372,8 @@ const SurveyPage = () => {
       setSubmitted(true);
       toast.success('Vielen Dank für Ihre Teilnahme!');
     } catch (error) {
-      toast.error('Fehler beim Absenden der Antworten');
+      console.error('Submit error:', error);
+      toast.error('Fehler beim Absenden der Antworten: ' + (error instanceof Error ? error.message : 'Unbekannter Fehler'));
     } finally {
       setSubmitting(false);
     }
