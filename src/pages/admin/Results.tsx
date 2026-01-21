@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option, Response } from '@/integrations/supabase/types';
@@ -24,22 +24,19 @@ import {
 } from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
-const META_PREFIX = '__dyad_meta__:';
 
-function isMetaOption(optionText: string) {
-  return optionText.startsWith(META_PREFIX);
+interface QuestionWithMeta extends Question {
+  max_text_answers?: number | null;
 }
 
 const Results = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [survey, setSurvey] = useState<Survey | null>(null);
-  const [questions, setQuestions] = useState<Question[]>([]);
+  const [questions, setQuestions] = useState<QuestionWithMeta[]>([]);
   const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
   const [responses, setResponses] = useState<Response[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,16 +57,7 @@ const Results = () => {
         .single();
 
       if (surveyError) throw surveyError;
-
-      const decoded = decodeDescriptionWithMeta(surveyData.description);
-      const normalizedSurvey: Survey = {
-        ...surveyData,
-        description: decoded.description,
-        expires_at: surveyData.expires_at ?? decoded.meta.expires_at ?? null,
-        max_votes: surveyData.max_votes ?? decoded.meta.max_votes ?? null,
-      };
-
-      setSurvey(normalizedSurvey);
+      setSurvey(surveyData);
 
       const { data: questionsData, error: questionsError } = await supabase
         .from('questions')
@@ -111,7 +99,7 @@ const Results = () => {
   };
 
   const getChartData = (questionId: string) => {
-    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
+    const questionOptions = options[questionId] || [];
     const questionResponses = responses.filter((r) => r.question_id === questionId);
 
     return questionOptions.map((option) => ({
@@ -122,7 +110,7 @@ const Results = () => {
 
   const getWordCloud = (questionId: string) => {
     const questionResponses = responses.filter((r) => r.question_id === questionId);
-    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
+    const questionOptions = options[questionId] || [];
 
     const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
     const counts = new Map<string, number>();
@@ -138,10 +126,6 @@ const Results = () => {
       .sort((a, b) => b.count - a.count);
 
     return items;
-  };
-
-  const isTextQuestion = (questionId: string) => {
-    return (options[questionId] || []).some((o) => isMetaOption(o.option_text));
   };
 
   const copyToClipboard = () => {
@@ -162,7 +146,6 @@ const Results = () => {
       const margin = 15;
       let yPosition = margin;
 
-      // Titel
       pdf.setFontSize(18);
       pdf.setFont('helvetica', 'bold');
       pdf.text(survey.title, margin, yPosition);
@@ -176,13 +159,11 @@ const Results = () => {
         yPosition += descLines.length * 5 + 5;
       }
 
-      // Teilnehmer
       const totalResponses = new Set(responses.map((r) => r.participant_id)).size;
       pdf.setFontSize(10);
       pdf.text(`Teilnehmer: ${totalResponses}`, margin, yPosition);
       yPosition += 10;
 
-      // Fragen durchgehen
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
 
@@ -197,7 +178,7 @@ const Results = () => {
         pdf.text(questionLines, margin, yPosition);
         yPosition += questionLines.length * 6 + 3;
 
-        if (isTextQuestion(question.id)) {
+        if (question.question_type === 'text') {
           const cloud = getWordCloud(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
@@ -314,7 +295,7 @@ const Results = () => {
 
         <div className="space-y-6">
           {questions.map((question) => {
-            if (isTextQuestion(question.id)) {
+            if (question.question_type === 'text') {
               const cloud = getWordCloud(question.id);
               const max = Math.max(1, ...cloud.map((c) => c.count));
 

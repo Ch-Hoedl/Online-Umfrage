@@ -11,20 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Trash2, ArrowLeft, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-import { encodeDescriptionWithMeta } from '@/utils/surveyMeta';
-
-const META_PREFIX = '__dyad_meta__:';
-
-function buildTextMetaOption(maxAnswers: number) {
-  return `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
-}
 
 interface QuestionData {
   id: string;
   question_text: string;
-  question_type: Question['question_type'];
+  question_type: 'single' | 'multiple' | 'rating' | 'text';
   options: { id: string; text: string }[];
-  text_max_answers: number;
+  max_text_answers: number;
 }
 
 const CreateSurvey = () => {
@@ -73,7 +66,7 @@ const CreateSurvey = () => {
         id: crypto.randomUUID(),
         question_text: '',
         question_type: 'single',
-        text_max_answers: 3,
+        max_text_answers: 3,
         options: [
           { id: crypto.randomUUID(), text: '' },
           { id: crypto.randomUUID(), text: '' },
@@ -92,8 +85,8 @@ const CreateSurvey = () => {
         if (q.id !== questionId) return q;
 
         const next = { ...q, [field]: value } as QuestionData;
-        if (field === 'question_type' && value === 'text' && !next.text_max_answers) {
-          next.text_max_answers = 3;
+        if (field === 'question_type' && value === 'text' && !next.max_text_answers) {
+          next.max_text_answers = 3;
         }
         return next;
       })
@@ -178,9 +171,9 @@ const CreateSurvey = () => {
       }
 
       if (question.question_type === 'text') {
-        const maxAnswers = Number(question.text_max_answers);
+        const maxAnswers = Number(question.max_text_answers);
         if (!Number.isFinite(maxAnswers) || maxAnswers < 1 || maxAnswers > 10) {
-          toast.error('Bei offenen Fragen muss „Max. Antworten“ zwischen 1 und 10 liegen');
+          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen');
           return;
         }
       }
@@ -198,19 +191,14 @@ const CreateSurvey = () => {
     setSaving(true);
 
     try {
-      // Supabase-DB hat in dieser App aktuell keine Spalten expires_at/max_votes.
-      // Wir speichern die Werte daher in der description als Meta.
-      const descriptionWithMeta = encodeDescriptionWithMeta(description, {
-        max_votes: parsedMaxVotes,
-        expires_at: expiresAt,
-      });
-
       const { data: survey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
           title,
-          description: descriptionWithMeta,
+          description,
           created_by: user?.id,
+          max_votes: parsedMaxVotes,
+          expires_at: expiresAt,
         })
         .select()
         .single();
@@ -219,16 +207,14 @@ const CreateSurvey = () => {
 
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
-        const dbQuestionType: Exclude<Question['question_type'], 'text'> =
-          question.question_type === 'text' ? 'multiple' : question.question_type;
-
         const { data: questionData, error: questionError } = await supabase
           .from('questions')
           .insert({
             survey_id: survey.id,
             question_text: question.question_text,
-            question_type: dbQuestionType,
+            question_type: question.question_type,
             order_index: i,
+            max_text_answers: question.question_type === 'text' ? question.max_text_answers : null,
           })
           .select()
           .single();
@@ -247,18 +233,7 @@ const CreateSurvey = () => {
 
             if (optionError) throw optionError;
           }
-        } else if (question.question_type === 'text') {
-          const maxAnswers = Number(question.text_max_answers);
-          const { error: metaOptionError } = await supabase
-            .from('options')
-            .insert({
-              question_id: questionData.id,
-              option_text: buildTextMetaOption(maxAnswers),
-              order_index: 9999,
-            });
-
-          if (metaOptionError) throw metaOptionError;
-        } else {
+        } else if (question.question_type !== 'text') {
           for (let j = 0; j < question.options.length; j++) {
             const { error: optionError } = await supabase
               .from('options')
@@ -402,18 +377,18 @@ const CreateSurvey = () => {
                         type="number"
                         min={1}
                         max={10}
-                        value={question.text_max_answers}
+                        value={question.max_text_answers}
                         onChange={(e) =>
                           updateQuestion(
                             question.id,
-                            'text_max_answers',
+                            'max_text_answers',
                             Number.parseInt(e.target.value || '1', 10)
                           )
                         }
                         placeholder="z.B. 3"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Teilnehmer können bis zu so viele Begriffe eingeben.
+                        Anzahl der Eingabefelder für Begriffe (1-10).
                       </p>
                     </div>
                   </div>

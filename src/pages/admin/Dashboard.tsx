@@ -27,15 +27,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { decodeDescriptionWithMeta, encodeDescriptionWithMeta } from '@/utils/surveyMeta';
 import { QRCodeSVG } from 'qrcode.react';
 import jsPDF from 'jspdf';
-
-const META_PREFIX = '__dyad_meta__:';
-
-function isMetaOption(optionText: string) {
-  return optionText.startsWith(META_PREFIX);
-}
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
@@ -88,18 +81,7 @@ const Dashboard = () => {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-
-      const normalized = (data || []).map((s: any) => {
-        const decoded = decodeDescriptionWithMeta(s.description);
-        return {
-          ...s,
-          description: decoded.description,
-          max_votes: s.max_votes ?? decoded.meta.max_votes ?? null,
-          expires_at: s.expires_at ?? decoded.meta.expires_at ?? null,
-        } as Survey;
-      });
-
-      setSurveys(normalized);
+      setSurveys(data || []);
     } catch (error) {
       toast.error('Fehler beim Laden der Umfragen');
     } finally {
@@ -159,26 +141,21 @@ const Dashboard = () => {
     setDuplicating(true);
 
     try {
-      const descriptionWithMeta = encodeDescriptionWithMeta(duplicateSurvey.description, {
-        max_votes: duplicateSurvey.max_votes ?? null,
-        expires_at: duplicateSurvey.expires_at ?? null,
-      });
-
-      // 1) Survey kopieren
       const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
           title,
-          description: descriptionWithMeta,
+          description: duplicateSurvey.description,
           created_by: user.id,
           is_active: duplicateSurvey.is_active,
+          max_votes: duplicateSurvey.max_votes,
+          expires_at: duplicateSurvey.expires_at,
         })
         .select('*')
         .single();
 
       if (surveyError) throw surveyError;
 
-      // 2) Fragen laden und kopieren
       const { data: questions, error: questionsError } = await supabase
         .from('questions')
         .select('*')
@@ -196,8 +173,9 @@ const Dashboard = () => {
           .insert({
             survey_id: newSurvey.id,
             question_text: q.question_text,
-            question_type: (q.question_type === 'text' ? 'multiple' : q.question_type) as any,
+            question_type: q.question_type,
             order_index: q.order_index,
+            max_text_answers: (q as any).max_text_answers ?? null,
           })
           .select('*')
           .single();
@@ -206,7 +184,6 @@ const Dashboard = () => {
         questionIdMap.set(q.id, insertedQuestion.id);
       }
 
-      // 3) Optionen laden und kopieren
       const oldQuestionIds = oldQuestions.map((q) => q.id);
       if (oldQuestionIds.length > 0) {
         const { data: options, error: optionsError } = await supabase
@@ -254,7 +231,6 @@ const Dashboard = () => {
     toast.info('PDF wird erstellt...');
 
     try {
-      // Daten laden
       const { data: surveyData, error: surveyError } = await supabase
         .from('surveys')
         .select('*')
@@ -262,14 +238,6 @@ const Dashboard = () => {
         .single();
 
       if (surveyError) throw surveyError;
-
-      const decoded = decodeDescriptionWithMeta(surveyData.description);
-      const survey: Survey = {
-        ...surveyData,
-        description: decoded.description,
-        expires_at: surveyData.expires_at ?? decoded.meta.expires_at ?? null,
-        max_votes: surveyData.max_votes ?? decoded.meta.max_votes ?? null,
-      };
 
       const { data: questionsData, error: questionsError } = await supabase
         .from('questions')
@@ -303,34 +271,30 @@ const Dashboard = () => {
       if (responsesError) throw responsesError;
       const responses = responsesData || [];
 
-      // PDF erstellen
       const pdf = new jsPDF('p', 'mm', 'a4');
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const margin = 15;
       let yPosition = margin;
 
-      // Titel
       pdf.setFontSize(18);
       pdf.setFont('helvetica', 'bold');
-      pdf.text(survey.title, margin, yPosition);
+      pdf.text(surveyData.title, margin, yPosition);
       yPosition += 10;
 
-      if (survey.description) {
+      if (surveyData.description) {
         pdf.setFontSize(11);
         pdf.setFont('helvetica', 'normal');
-        const descLines = pdf.splitTextToSize(survey.description, pageWidth - 2 * margin);
+        const descLines = pdf.splitTextToSize(surveyData.description, pageWidth - 2 * margin);
         pdf.text(descLines, margin, yPosition);
         yPosition += descLines.length * 5 + 5;
       }
 
-      // Teilnehmer
       const totalResponses = new Set(responses.map((r: Response) => r.participant_id)).size;
       pdf.setFontSize(10);
       pdf.text(`Teilnehmer: ${totalResponses}`, margin, yPosition);
       yPosition += 10;
 
-      // Fragen durchgehen
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
 
@@ -345,13 +309,10 @@ const Dashboard = () => {
         pdf.text(questionLines, margin, yPosition);
         yPosition += questionLines.length * 6 + 3;
 
-        const questionOptions = (optionsByQuestion[question.id] || []).filter((o) => !isMetaOption(o.option_text));
+        const questionOptions = optionsByQuestion[question.id] || [];
         const questionResponses = responses.filter((r: Response) => r.question_id === question.id);
 
-        const isTextQ = (optionsByQuestion[question.id] || []).some((o) => isMetaOption(o.option_text));
-
-        if (isTextQ) {
-          // Begriffswolke
+        if (question.question_type === 'text') {
           const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
           const counts = new Map<string, number>();
 
@@ -382,7 +343,6 @@ const Dashboard = () => {
             });
           }
         } else {
-          // Normale Frage
           const chartData = questionOptions.map((option) => ({
             name: option.option_text,
             value: questionResponses.filter((r: Response) => r.option_id === option.id).length,
@@ -404,7 +364,7 @@ const Dashboard = () => {
         yPosition += 5;
       }
 
-      pdf.save(`${survey.title.replace(/[^a-z0-9]/gi, '_')}_Ergebnisse.pdf`);
+      pdf.save(`${surveyData.title.replace(/[^a-z0-9]/gi, '_')}_Ergebnisse.pdf`);
       toast.success('PDF erfolgreich erstellt!');
     } catch (error) {
       console.error(error);

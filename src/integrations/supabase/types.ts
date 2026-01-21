@@ -4,10 +4,8 @@ export interface Survey {
   description: string | null;
   created_by: string;
   is_active: boolean;
-  /** Maximale Anzahl an Teilnehmern/Stimmen (null = kein Limit). Kann in der DB fehlen und wird dann aus Meta gelesen. */
-  max_votes?: number | null;
-  /** Ablaufdatum/Zeitpunkt, ab dem nicht mehr abgestimmt werden kann. Kann in der DB fehlen und wird dann aus Meta gelesen. */
-  expires_at?: string | null;
+  max_votes: number | null;
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -16,9 +14,9 @@ export interface Question {
   id: string;
   survey_id: string;
   question_text: string;
-  /** 'text' wird client-seitig genutzt und beim Speichern als Meta abgebildet. */
   question_type: 'single' | 'multiple' | 'rating' | 'text';
   order_index: number;
+  max_text_answers?: number | null;
   created_at: string;
 }
 

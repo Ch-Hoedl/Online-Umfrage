@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
@@ -10,30 +10,9 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
-import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
 const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
-
-const META_PREFIX = '__dyad_meta__:';
-
-function isMetaOption(optionText: string) {
-  return optionText.startsWith(META_PREFIX);
-}
-
-function parseTextMaxAnswers(optionText: string): number | null {
-  if (!isMetaOption(optionText)) return null;
-  try {
-    const raw = optionText.slice(META_PREFIX.length);
-    const parsed = JSON.parse(raw);
-    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') {
-      return parsed.maxAnswers;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
 
 function getDeviceId() {
   const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
@@ -55,11 +34,14 @@ function normalizeTextTerm(value: string) {
   return value.trim().replace(/\s+/g, ' ');
 }
 
+interface QuestionWithMeta extends Question {
+  max_text_answers?: number | null;
+}
+
 const SurveyPage = () => {
   const { id } = useParams();
-  const navigate = useNavigate();
   const [survey, setSurvey] = useState<Survey | null>(null);
-  const [questions, setQuestions] = useState<Question[]>([]);
+  const [questions, setQuestions] = useState<QuestionWithMeta[]>([]);
   const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
   const [answers, setAnswers] = useState<{ [key: string]: string[] }>({});
   const [loading, setLoading] = useState(true);
@@ -92,26 +74,12 @@ const SurveyPage = () => {
         .single();
 
       if (surveyError) throw surveyError;
+      setSurvey(surveyData);
 
-      // expires_at/max_votes liegen in dieser App in der description als Meta
-      const decoded = decodeDescriptionWithMeta(surveyData.description);
-      const expiresAt = surveyData.expires_at ?? decoded.meta.expires_at ?? null;
-      const maxVotes = surveyData.max_votes ?? decoded.meta.max_votes ?? null;
-
-      const normalizedSurvey: Survey = {
-        ...surveyData,
-        description: decoded.description,
-        expires_at: expiresAt,
-        max_votes: maxVotes,
-      };
-
-      setSurvey(normalizedSurvey);
-
-      const isExpired = !!expiresAt && new Date(expiresAt).getTime() <= Date.now();
+      const isExpired = !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
       setExpired(isExpired);
 
-      // Schnell-Check: wenn wir lokal schon markiert haben, direkt sperren.
-      setAlreadyVoted(hasVotedLocally(normalizedSurvey.id));
+      setAlreadyVoted(hasVotedLocally(surveyData.id));
 
       const { data: questionsData, error: questionsError } = await supabase
         .from('questions')
@@ -123,9 +91,8 @@ const SurveyPage = () => {
       const loadedQuestions = questionsData || [];
       setQuestions(loadedQuestions);
 
-      const questionIds = loadedQuestions.map((q) => q.id);
+      const questionIds = loadedQuestions.map((q: Question) => q.id);
 
-      // Antworten-Statistik: Limit prüfen + Geräte-Duplikate verhindern
       if (questionIds.length > 0) {
         const { data: respData, error: respError } = await supabase
           .from('responses')
@@ -138,12 +105,12 @@ const SurveyPage = () => {
         setParticipantCount(participants.size);
 
         const deviceId = getDeviceId();
-        // Server-seitig prüfen (zusätzlich zur lokalen Sperre)
         if (participants.has(deviceId)) {
           setAlreadyVoted(true);
-          markVotedLocally(normalizedSurvey.id);
+          markVotedLocally(surveyData.id);
         }
 
+        const maxVotes = surveyData.max_votes ?? null;
         setLimitReached(!!maxVotes && participants.size >= maxVotes);
       } else {
         setParticipantCount(0);
@@ -165,7 +132,6 @@ const SurveyPage = () => {
         optionsByQuestion[opt.question_id].push(opt);
       });
 
-      // Sortiere Optionen innerhalb jeder Frage (wichtig, damit Antworten korrekt angezeigt/ausgewählt werden können)
       Object.keys(optionsByQuestion).forEach((questionId) => {
         optionsByQuestion[questionId].sort((a, b) => a.order_index - b.order_index);
       });
@@ -177,20 +143,6 @@ const SurveyPage = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const getTextMaxAnswers = (questionId: string) => {
-    const meta = (options[questionId] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
-    const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
-    return parsed && parsed >= 1 ? parsed : 1;
-  };
-
-  const isTextQuestion = (questionId: string) => {
-    return (options[questionId] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
-  };
-
-  const getVisibleOptions = (questionId: string) => {
-    return (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
   };
 
   const handleSingleChoice = (questionId: string, optionId: string) => {
@@ -224,18 +176,7 @@ const SurveyPage = () => {
     const normalized = normalizeTextTerm(term);
     if (!normalized) throw new Error('empty term');
 
-    console.log('[Survey] Creating/finding option for term:', normalized, 'question:', questionId);
-
-    // 1) In bereits geladenen Optionen suchen
-    const existingInState = getVisibleOptions(questionId).find(
-      (o) => o.option_text.toLowerCase() === normalized.toLowerCase()
-    );
-    if (existingInState) {
-      console.log('[Survey] Found existing option in state:', existingInState.id);
-      return existingInState.id;
-    }
-
-    // 2) Server-seitig prüfen (falls zwischenzeitlich angelegt)
+    // 1) Server-seitig prüfen ob Begriff bereits existiert
     const { data: existing, error: existingError } = await supabase
       .from('options')
       .select('*')
@@ -243,18 +184,10 @@ const SurveyPage = () => {
       .ilike('option_text', normalized)
       .maybeSingle();
 
-    if (existingError) {
-      console.error('[Survey] Error checking existing option:', existingError);
-      throw existingError;
-    }
-    
-    if (existing) {
-      console.log('[Survey] Found existing option on server:', existing.id);
-      return (existing as Option).id;
-    }
+    if (existingError) throw existingError;
+    if (existing) return (existing as Option).id;
 
-    // 3) Neu anlegen
-    console.log('[Survey] Creating new option...');
+    // 2) Neu anlegen
     const { data: created, error: createError } = await supabase
       .from('options')
       .insert({
@@ -265,22 +198,12 @@ const SurveyPage = () => {
       .select('*')
       .single();
 
-    if (createError) {
-      console.error('[Survey] Error creating option:', createError);
-      throw createError;
-    }
-    
-    console.log('[Survey] Created new option:', created.id);
+    if (createError) throw createError;
     return (created as Option).id;
   };
 
   const handleSubmit = async () => {
-    if (!survey) {
-      console.error('[Survey] No survey loaded');
-      return;
-    }
-
-    console.log('[Survey] Starting submit...');
+    if (!survey) return;
 
     if (expired) {
       toast.error('Diese Umfrage ist abgelaufen');
@@ -296,16 +219,14 @@ const SurveyPage = () => {
     }
 
     // Validierung
-    console.log('[Survey] Validating answers...');
     for (const question of questions) {
-      if (isTextQuestion(question.id)) {
-        const max = getTextMaxAnswers(question.id);
+      if (question.question_type === 'text') {
+        const max = question.max_text_answers ?? 1;
         const terms = (answers[question.id] || [])
           .slice(0, max)
           .map(normalizeTextTerm)
           .filter(Boolean);
         if (terms.length === 0) {
-          console.error('[Survey] Text question not answered:', question.id);
           toast.error('Bitte beantworten Sie alle Fragen');
           return;
         }
@@ -313,7 +234,6 @@ const SurveyPage = () => {
       }
 
       if (!answers[question.id] || answers[question.id].length === 0) {
-        console.error('[Survey] Question not answered:', question.id);
         toast.error('Bitte beantworten Sie alle Fragen');
         return;
       }
@@ -323,9 +243,8 @@ const SurveyPage = () => {
 
     try {
       const participantId = getDeviceId();
-      console.log('[Survey] Participant ID:', participantId);
 
-      // Re-Check kurz vor dem Insert (reduziert Doppel-Abstimmungen bei mehreren Tabs)
+      // Re-Check kurz vor dem Insert
       const questionIds = questions.map((q) => q.id);
       if (questionIds.length > 0) {
         const { data: respData, error: respError } = await supabase
@@ -352,70 +271,43 @@ const SurveyPage = () => {
       }
 
       // Antworten speichern
-      console.log('[Survey] Saving responses...');
       for (const question of questions) {
-        console.log('[Survey] Processing question:', question.id, question.question_text);
-        
-        if (isTextQuestion(question.id)) {
-          const max = getTextMaxAnswers(question.id);
+        if (question.question_type === 'text') {
+          const max = question.max_text_answers ?? 1;
           const terms = (answers[question.id] || [])
             .slice(0, max)
             .map(normalizeTextTerm)
             .filter(Boolean);
 
-          console.log('[Survey] Text question terms:', terms);
-
           for (const term of terms) {
-            try {
-              const optionId = await getOrCreateTextOptionId(question.id, term);
-              console.log('[Survey] Inserting text response:', { question: question.id, option: optionId, participant: participantId });
-              
-              const { error } = await supabase.from('responses').insert({
-                question_id: question.id,
-                option_id: optionId,
-                participant_id: participantId,
-              });
-              
-              if (error) {
-                console.error('[Survey] Error inserting text response:', error);
-                throw error;
-              }
-            } catch (err) {
-              console.error('[Survey] Error processing text term:', term, err);
-              throw err;
-            }
+            const optionId = await getOrCreateTextOptionId(question.id, term);
+            const { error } = await supabase.from('responses').insert({
+              question_id: question.id,
+              option_id: optionId,
+              participant_id: participantId,
+            });
+            if (error) throw error;
           }
-
           continue;
         }
 
         const selectedOptionIds = answers[question.id] || [];
-        console.log('[Survey] Selected options:', selectedOptionIds);
-        
         for (const optionId of selectedOptionIds) {
-          console.log('[Survey] Inserting response:', { question: question.id, option: optionId, participant: participantId });
-          
           const { error } = await supabase.from('responses').insert({
             question_id: question.id,
             option_id: optionId,
             participant_id: participantId,
           });
-
-          if (error) {
-            console.error('[Survey] Error inserting response:', error);
-            throw error;
-          }
+          if (error) throw error;
         }
       }
 
-      console.log('[Survey] All responses saved successfully');
       markVotedLocally(survey.id);
       setSubmitted(true);
       toast.success('Vielen Dank für Ihre Teilnahme!');
     } catch (error) {
-      console.error('[Survey] Submit error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
-      toast.error(`Fehler beim Absenden: ${errorMessage}`);
+      console.error('Submit error:', error);
+      toast.error('Fehler beim Absenden der Antworten');
     } finally {
       setSubmitting(false);
     }
@@ -491,9 +383,8 @@ const SurveyPage = () => {
 
         <div className="space-y-6">
           {questions.map((question, index) => {
-            const visibleOptions = getVisibleOptions(question.id);
-            const textQuestion = isTextQuestion(question.id);
-            const textMax = textQuestion ? getTextMaxAnswers(question.id) : 0;
+            const visibleOptions = options[question.id] || [];
+            const textMax = question.question_type === 'text' ? (question.max_text_answers ?? 1) : 0;
 
             return (
               <Card key={question.id} className={!canVote ? 'opacity-75' : ''}>
@@ -502,14 +393,14 @@ const SurveyPage = () => {
                     {index + 1}. {question.question_text}
                   </CardTitle>
                   <CardDescription>
-                    {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
-                    {!textQuestion && question.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                    {!textQuestion && question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                    {!textQuestion && question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                    {question.question_type === 'text' && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
+                    {question.question_type === 'single' && 'Wählen Sie eine Antwort'}
+                    {question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
+                    {question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {!textQuestion && question.question_type === 'single' && (
+                  {question.question_type === 'single' && (
                     <RadioGroup
                       value={answers[question.id]?.[0] || ''}
                       onValueChange={(value) => handleSingleChoice(question.id, value)}
@@ -525,7 +416,7 @@ const SurveyPage = () => {
                     </RadioGroup>
                   )}
 
-                  {!textQuestion && question.question_type === 'multiple' && (
+                  {question.question_type === 'multiple' && (
                     <div className="space-y-3">
                       {visibleOptions.map((option) => (
                         <div key={option.id} className="flex items-center space-x-2">
@@ -545,7 +436,7 @@ const SurveyPage = () => {
                     </div>
                   )}
 
-                  {!textQuestion && question.question_type === 'rating' && (
+                  {question.question_type === 'rating' && (
                     <RadioGroup
                       value={answers[question.id]?.[0] || ''}
                       onValueChange={(value) => handleSingleChoice(question.id, value)}
@@ -568,11 +459,11 @@ const SurveyPage = () => {
                     </RadioGroup>
                   )}
 
-                  {textQuestion && (
+                  {question.question_type === 'text' && (
                     <div className="space-y-3">
                       {Array.from({ length: textMax }).map((_, idx) => (
                         <div key={idx} className="space-y-1">
-                          <Label>Antwort {idx + 1}</Label>
+                          <Label>Begriff {idx + 1}</Label>
                           <Input
                             value={answers[question.id]?.[idx] || ''}
                             onChange={(e) => handleTextChange(question.id, idx, e.target.value)}
