@@ -81,6 +81,43 @@ const Dashboard = () => {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
+
+      // Prüfe abgelaufene Umfragen und setze sie auf inaktiv
+      const now = new Date();
+      const surveysToUpdate: string[] = [];
+
+      (data || []).forEach((survey: Survey) => {
+        if (survey.is_active && survey.expires_at) {
+          const expiresAt = new Date(survey.expires_at);
+          if (expiresAt <= now) {
+            surveysToUpdate.push(survey.id);
+          }
+        }
+      });
+
+      // Batch-Update für abgelaufene Umfragen
+      if (surveysToUpdate.length > 0) {
+        const { error: updateError } = await supabase
+          .from('surveys')
+          .update({ is_active: false })
+          .in('id', surveysToUpdate);
+
+        if (updateError) {
+          console.error('Error updating expired surveys:', updateError);
+        } else {
+          // Daten neu laden um aktualisierte Werte anzuzeigen
+          const { data: refreshedData, error: refreshError } = await supabase
+            .from('surveys')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+          if (!refreshError) {
+            setSurveys(refreshedData || []);
+            return;
+          }
+        }
+      }
+
       setSurveys(data || []);
     } catch (error) {
       toast.error('Fehler beim Laden der Umfragen');
@@ -427,83 +464,103 @@ const Dashboard = () => {
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {surveys.map((survey) => (
-              <Card key={survey.id} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <CardTitle className="text-xl mb-2">{survey.title}</CardTitle>
-                      <CardDescription className="line-clamp-2">
-                        {survey.description || 'Keine Beschreibung'}
-                      </CardDescription>
+            {surveys.map((survey) => {
+              const expiresAt = survey.expires_at ? new Date(survey.expires_at) : null;
+              const isExpired = expiresAt ? expiresAt <= new Date() : false;
+              const expiresAtFormatted = expiresAt
+                ? expiresAt.toLocaleDateString('de-DE', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                : null;
+
+              return (
+                <Card key={survey.id} className="hover:shadow-lg transition-shadow">
+                  <CardHeader>
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <CardTitle className="text-xl mb-2">{survey.title}</CardTitle>
+                        <CardDescription className="line-clamp-2">
+                          {survey.description || 'Keine Beschreibung'}
+                        </CardDescription>
+                        {expiresAtFormatted && (
+                          <p className={`text-xs mt-2 ${isExpired ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+                            {isExpired ? '⏰ Abgelaufen: ' : '⏰ Läuft ab: '}
+                            {expiresAtFormatted}
+                          </p>
+                        )}
+                      </div>
+                      <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                        survey.is_active
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-700'
+                      }`}>
+                        {survey.is_active ? 'Aktiv' : 'Inaktiv'}
+                      </div>
                     </div>
-                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                      survey.is_active
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-gray-100 text-gray-700'
-                    }`}>
-                      {survey.is_active ? 'Aktiv' : 'Inaktiv'}
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex gap-2 mb-3">
+                      <Button
+                        onClick={() => navigate(`/admin/results/${survey.id}`)}
+                        variant="outline"
+                        className="flex-1"
+                      >
+                        <Eye className="w-4 h-4 mr-2" />
+                        Ergebnisse
+                      </Button>
+                      <Button
+                        onClick={() => setQrSurvey(survey)}
+                        variant="outline"
+                        size="icon"
+                        title="QR-Code"
+                      >
+                        <QrCode className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        onClick={() => exportSurveyToPDF(survey.id)}
+                        variant="outline"
+                        size="icon"
+                        title="PDF exportieren"
+                        disabled={exportingSurveyId === survey.id}
+                      >
+                        <Download className="w-4 h-4" />
+                      </Button>
                     </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex gap-2 mb-3">
-                    <Button
-                      onClick={() => navigate(`/admin/results/${survey.id}`)}
-                      variant="outline"
-                      className="flex-1"
-                    >
-                      <Eye className="w-4 h-4 mr-2" />
-                      Ergebnisse
-                    </Button>
-                    <Button
-                      onClick={() => setQrSurvey(survey)}
-                      variant="outline"
-                      size="icon"
-                      title="QR-Code"
-                    >
-                      <QrCode className="w-4 h-4" />
-                    </Button>
-                    <Button
-                      onClick={() => exportSurveyToPDF(survey.id)}
-                      variant="outline"
-                      size="icon"
-                      title="PDF exportieren"
-                      disabled={exportingSurveyId === survey.id}
-                    >
-                      <Download className="w-4 h-4" />
-                    </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() => openDuplicateDialog(survey)}
-                      variant="outline"
-                      size="icon"
-                      title="Duplizieren"
-                    >
-                      <Copy className="w-4 h-4" />
-                    </Button>
-                    <Button
-                      onClick={() => navigate(`/admin/edit/${survey.id}`)}
-                      variant="outline"
-                      size="icon"
-                      title="Bearbeiten"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                    <Button
-                      onClick={() => setDeleteId(survey.id)}
-                      variant="outline"
-                      size="icon"
-                      className="text-red-600 hover:text-red-700"
-                      title="Löschen"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() => openDuplicateDialog(survey)}
+                        variant="outline"
+                        size="icon"
+                        title="Duplizieren"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        onClick={() => navigate(`/admin/edit/${survey.id}`)}
+                        variant="outline"
+                        size="icon"
+                        title="Bearbeiten"
+                      >
+                        <Edit className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        onClick={() => setDeleteId(survey.id)}
+                        variant="outline"
+                        size="icon"
+                        className="text-red-600 hover:text-red-700"
+                        title="Löschen"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         )}
       </div>
