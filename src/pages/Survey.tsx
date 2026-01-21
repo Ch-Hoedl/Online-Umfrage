@@ -172,6 +172,7 @@ const SurveyPage = () => {
 
       setOptions(optionsByQuestion);
     } catch (error) {
+      console.error('Load survey error:', error);
       toast.error('Umfrage nicht gefunden oder nicht aktiv');
     } finally {
       setLoading(false);
@@ -223,24 +224,37 @@ const SurveyPage = () => {
     const normalized = normalizeTextTerm(term);
     if (!normalized) throw new Error('empty term');
 
+    console.log('[Survey] Creating/finding option for term:', normalized, 'question:', questionId);
+
     // 1) In bereits geladenen Optionen suchen
     const existingInState = getVisibleOptions(questionId).find(
       (o) => o.option_text.toLowerCase() === normalized.toLowerCase()
     );
-    if (existingInState) return existingInState.id;
+    if (existingInState) {
+      console.log('[Survey] Found existing option in state:', existingInState.id);
+      return existingInState.id;
+    }
 
     // 2) Server-seitig prüfen (falls zwischenzeitlich angelegt)
     const { data: existing, error: existingError } = await supabase
       .from('options')
       .select('*')
       .eq('question_id', questionId)
-      .eq('option_text', normalized)
+      .ilike('option_text', normalized)
       .maybeSingle();
 
-    if (existingError) throw existingError;
-    if (existing) return (existing as Option).id;
+    if (existingError) {
+      console.error('[Survey] Error checking existing option:', existingError);
+      throw existingError;
+    }
+    
+    if (existing) {
+      console.log('[Survey] Found existing option on server:', existing.id);
+      return (existing as Option).id;
+    }
 
     // 3) Neu anlegen
+    console.log('[Survey] Creating new option...');
     const { data: created, error: createError } = await supabase
       .from('options')
       .insert({
@@ -251,12 +265,22 @@ const SurveyPage = () => {
       .select('*')
       .single();
 
-    if (createError) throw createError;
+    if (createError) {
+      console.error('[Survey] Error creating option:', createError);
+      throw createError;
+    }
+    
+    console.log('[Survey] Created new option:', created.id);
     return (created as Option).id;
   };
 
   const handleSubmit = async () => {
-    if (!survey) return;
+    if (!survey) {
+      console.error('[Survey] No survey loaded');
+      return;
+    }
+
+    console.log('[Survey] Starting submit...');
 
     if (expired) {
       toast.error('Diese Umfrage ist abgelaufen');
@@ -272,6 +296,7 @@ const SurveyPage = () => {
     }
 
     // Validierung
+    console.log('[Survey] Validating answers...');
     for (const question of questions) {
       if (isTextQuestion(question.id)) {
         const max = getTextMaxAnswers(question.id);
@@ -280,6 +305,7 @@ const SurveyPage = () => {
           .map(normalizeTextTerm)
           .filter(Boolean);
         if (terms.length === 0) {
+          console.error('[Survey] Text question not answered:', question.id);
           toast.error('Bitte beantworten Sie alle Fragen');
           return;
         }
@@ -287,6 +313,7 @@ const SurveyPage = () => {
       }
 
       if (!answers[question.id] || answers[question.id].length === 0) {
+        console.error('[Survey] Question not answered:', question.id);
         toast.error('Bitte beantworten Sie alle Fragen');
         return;
       }
@@ -296,6 +323,7 @@ const SurveyPage = () => {
 
     try {
       const participantId = getDeviceId();
+      console.log('[Survey] Participant ID:', participantId);
 
       // Re-Check kurz vor dem Insert (reduziert Doppel-Abstimmungen bei mehreren Tabs)
       const questionIds = questions.map((q) => q.id);
@@ -324,7 +352,10 @@ const SurveyPage = () => {
       }
 
       // Antworten speichern
+      console.log('[Survey] Saving responses...');
       for (const question of questions) {
+        console.log('[Survey] Processing question:', question.id, question.question_text);
+        
         if (isTextQuestion(question.id)) {
           const max = getTextMaxAnswers(question.id);
           const terms = (answers[question.id] || [])
@@ -332,20 +363,25 @@ const SurveyPage = () => {
             .map(normalizeTextTerm)
             .filter(Boolean);
 
+          console.log('[Survey] Text question terms:', terms);
+
           for (const term of terms) {
             try {
               const optionId = await getOrCreateTextOptionId(question.id, term);
+              console.log('[Survey] Inserting text response:', { question: question.id, option: optionId, participant: participantId });
+              
               const { error } = await supabase.from('responses').insert({
                 question_id: question.id,
                 option_id: optionId,
                 participant_id: participantId,
               });
+              
               if (error) {
-                console.error('Error inserting text response:', error);
+                console.error('[Survey] Error inserting text response:', error);
                 throw error;
               }
             } catch (err) {
-              console.error('Error processing text term:', term, err);
+              console.error('[Survey] Error processing text term:', term, err);
               throw err;
             }
           }
@@ -354,7 +390,11 @@ const SurveyPage = () => {
         }
 
         const selectedOptionIds = answers[question.id] || [];
+        console.log('[Survey] Selected options:', selectedOptionIds);
+        
         for (const optionId of selectedOptionIds) {
+          console.log('[Survey] Inserting response:', { question: question.id, option: optionId, participant: participantId });
+          
           const { error } = await supabase.from('responses').insert({
             question_id: question.id,
             option_id: optionId,
@@ -362,18 +402,20 @@ const SurveyPage = () => {
           });
 
           if (error) {
-            console.error('Error inserting response:', error);
+            console.error('[Survey] Error inserting response:', error);
             throw error;
           }
         }
       }
 
+      console.log('[Survey] All responses saved successfully');
       markVotedLocally(survey.id);
       setSubmitted(true);
       toast.success('Vielen Dank für Ihre Teilnahme!');
     } catch (error) {
-      console.error('Submit error:', error);
-      toast.error('Fehler beim Absenden der Antworten: ' + (error instanceof Error ? error.message : 'Unbekannter Fehler'));
+      console.error('[Survey] Submit error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
+      toast.error(`Fehler beim Absenden: ${errorMessage}`);
     } finally {
       setSubmitting(false);
     }
