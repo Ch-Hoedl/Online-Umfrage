@@ -4,7 +4,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { Survey, Profile, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy } from 'lucide-react';
+import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy, QrCode, Share2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import {
@@ -28,6 +28,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { decodeDescriptionWithMeta, encodeDescriptionWithMeta } from '@/utils/surveyMeta';
+import { QRCodeSVG } from 'qrcode.react';
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
@@ -38,6 +39,8 @@ const Dashboard = () => {
   const [duplicateSurvey, setDuplicateSurvey] = useState<Survey | null>(null);
   const [duplicateTitle, setDuplicateTitle] = useState('');
   const [duplicating, setDuplicating] = useState(false);
+
+  const [qrSurvey, setQrSurvey] = useState<Survey | null>(null);
 
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
@@ -232,6 +235,12 @@ const Dashboard = () => {
     }
   };
 
+  const copyToClipboard = (surveyId: string) => {
+    const url = `${window.location.origin}/survey/${surveyId}`;
+    navigator.clipboard.writeText(url);
+    toast.success('Link kopiert!');
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -305,7 +314,7 @@ const Dashboard = () => {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 mb-3">
                     <Button
                       onClick={() => navigate(`/admin/results/${survey.id}`)}
                       variant="outline"
@@ -314,6 +323,16 @@ const Dashboard = () => {
                       <Eye className="w-4 h-4 mr-2" />
                       Ergebnisse
                     </Button>
+                    <Button
+                      onClick={() => setQrSurvey(survey)}
+                      variant="outline"
+                      size="icon"
+                      title="QR-Code"
+                    >
+                      <QrCode className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  <div className="flex gap-2">
                     <Button
                       onClick={() => openDuplicateDialog(survey)}
                       variant="outline"
@@ -392,6 +411,35 @@ const Dashboard = () => {
               {duplicating ? 'Dupliziere…' : 'Duplizieren'}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!qrSurvey} onOpenChange={(open) => !open && setQrSurvey(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>QR-Code: {qrSurvey?.title}</DialogTitle>
+            <DialogDescription>
+              Scannen Sie den QR-Code oder teilen Sie den Link
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-4 py-4">
+            <div className="bg-white p-4 rounded-lg border-2">
+              <QRCodeSVG value={`${window.location.origin}/survey/${qrSurvey?.id}`} size={256} />
+            </div>
+            <div className="w-full">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={`${window.location.origin}/survey/${qrSurvey?.id}`}
+                  readOnly
+                  className="flex-1 px-3 py-2 border rounded-md text-sm"
+                />
+                <Button onClick={() => qrSurvey && copyToClipboard(qrSurvey.id)} size="icon">
+                  <Share2 className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
