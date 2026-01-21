@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Survey, Profile, Question, Option } from '@/integrations/supabase/types';
+import { Survey, Profile, Question, Option, Response } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy, QrCode, Share2 } from 'lucide-react';
+import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy, QrCode, Share2, Download } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import {
@@ -29,6 +29,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { decodeDescriptionWithMeta, encodeDescriptionWithMeta } from '@/utils/surveyMeta';
 import { QRCodeSVG } from 'qrcode.react';
+import jsPDF from 'jspdf';
+
+const META_PREFIX = '__dyad_meta__:';
+
+function isMetaOption(optionText: string) {
+  return optionText.startsWith(META_PREFIX);
+}
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
@@ -41,6 +48,7 @@ const Dashboard = () => {
   const [duplicating, setDuplicating] = useState(false);
 
   const [qrSurvey, setQrSurvey] = useState<Survey | null>(null);
+  const [exportingSurveyId, setExportingSurveyId] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
@@ -241,6 +249,171 @@ const Dashboard = () => {
     toast.success('Link kopiert!');
   };
 
+  const exportSurveyToPDF = async (surveyId: string) => {
+    setExportingSurveyId(surveyId);
+    toast.info('PDF wird erstellt...');
+
+    try {
+      // Daten laden
+      const { data: surveyData, error: surveyError } = await supabase
+        .from('surveys')
+        .select('*')
+        .eq('id', surveyId)
+        .single();
+
+      if (surveyError) throw surveyError;
+
+      const decoded = decodeDescriptionWithMeta(surveyData.description);
+      const survey: Survey = {
+        ...surveyData,
+        description: decoded.description,
+        expires_at: surveyData.expires_at ?? decoded.meta.expires_at ?? null,
+        max_votes: surveyData.max_votes ?? decoded.meta.max_votes ?? null,
+      };
+
+      const { data: questionsData, error: questionsError } = await supabase
+        .from('questions')
+        .select('*')
+        .eq('survey_id', surveyId)
+        .order('order_index');
+
+      if (questionsError) throw questionsError;
+      const questions = questionsData || [];
+
+      const { data: optionsData, error: optionsError } = await supabase
+        .from('options')
+        .select('*')
+        .in('question_id', questions.map((q) => q.id));
+
+      if (optionsError) throw optionsError;
+
+      const optionsByQuestion: { [key: string]: Option[] } = {};
+      (optionsData || []).forEach((option: Option) => {
+        if (!optionsByQuestion[option.question_id]) {
+          optionsByQuestion[option.question_id] = [];
+        }
+        optionsByQuestion[option.question_id].push(option);
+      });
+
+      const { data: responsesData, error: responsesError } = await supabase
+        .from('responses')
+        .select('*')
+        .in('question_id', questions.map((q) => q.id));
+
+      if (responsesError) throw responsesError;
+      const responses = responsesData || [];
+
+      // PDF erstellen
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      let yPosition = margin;
+
+      // Titel
+      pdf.setFontSize(18);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(survey.title, margin, yPosition);
+      yPosition += 10;
+
+      if (survey.description) {
+        pdf.setFontSize(11);
+        pdf.setFont('helvetica', 'normal');
+        const descLines = pdf.splitTextToSize(survey.description, pageWidth - 2 * margin);
+        pdf.text(descLines, margin, yPosition);
+        yPosition += descLines.length * 5 + 5;
+      }
+
+      // Teilnehmer
+      const totalResponses = new Set(responses.map((r: Response) => r.participant_id)).size;
+      pdf.setFontSize(10);
+      pdf.text(`Teilnehmer: ${totalResponses}`, margin, yPosition);
+      yPosition += 10;
+
+      // Fragen durchgehen
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+
+        if (yPosition > pageHeight - 40) {
+          pdf.addPage();
+          yPosition = margin;
+        }
+
+        pdf.setFontSize(12);
+        pdf.setFont('helvetica', 'bold');
+        const questionLines = pdf.splitTextToSize(`${i + 1}. ${question.question_text}`, pageWidth - 2 * margin);
+        pdf.text(questionLines, margin, yPosition);
+        yPosition += questionLines.length * 6 + 3;
+
+        const questionOptions = (optionsByQuestion[question.id] || []).filter((o) => !isMetaOption(o.option_text));
+        const questionResponses = responses.filter((r: Response) => r.question_id === question.id);
+
+        const isTextQ = (optionsByQuestion[question.id] || []).some((o) => isMetaOption(o.option_text));
+
+        if (isTextQ) {
+          // Begriffswolke
+          const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
+          const counts = new Map<string, number>();
+
+          for (const r of questionResponses) {
+            const text = idToText.get(r.option_id);
+            if (!text) continue;
+            counts.set(text, (counts.get(text) || 0) + 1);
+          }
+
+          const cloud = Array.from(counts.entries())
+            .map(([text, count]) => ({ text, count }))
+            .sort((a, b) => b.count - a.count);
+
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'normal');
+
+          if (cloud.length === 0) {
+            pdf.text('Noch keine Antworten.', margin + 5, yPosition);
+            yPosition += 6;
+          } else {
+            cloud.slice(0, 15).forEach((item) => {
+              if (yPosition > pageHeight - 20) {
+                pdf.addPage();
+                yPosition = margin;
+              }
+              pdf.text(`• ${item.text} (${item.count}×)`, margin + 5, yPosition);
+              yPosition += 5;
+            });
+          }
+        } else {
+          // Normale Frage
+          const chartData = questionOptions.map((option) => ({
+            name: option.option_text,
+            value: questionResponses.filter((r: Response) => r.option_id === option.id).length,
+          }));
+
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'normal');
+
+          chartData.forEach((item) => {
+            if (yPosition > pageHeight - 20) {
+              pdf.addPage();
+              yPosition = margin;
+            }
+            pdf.text(`• ${item.name}: ${item.value}`, margin + 5, yPosition);
+            yPosition += 5;
+          });
+        }
+
+        yPosition += 5;
+      }
+
+      pdf.save(`${survey.title.replace(/[^a-z0-9]/gi, '_')}_Ergebnisse.pdf`);
+      toast.success('PDF erfolgreich erstellt!');
+    } catch (error) {
+      console.error(error);
+      toast.error('Fehler beim Erstellen des PDFs');
+    } finally {
+      setExportingSurveyId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -330,6 +503,15 @@ const Dashboard = () => {
                       title="QR-Code"
                     >
                       <QrCode className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      onClick={() => exportSurveyToPDF(survey.id)}
+                      variant="outline"
+                      size="icon"
+                      title="PDF exportieren"
+                      disabled={exportingSurveyId === survey.id}
+                    >
+                      <Download className="w-4 h-4" />
                     </Button>
                   </div>
                   <div className="flex gap-2">
