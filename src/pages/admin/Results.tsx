@@ -224,6 +224,51 @@ const Results = () => {
     }
   };
 
+  const exportToCSV = () => {
+    if (!survey) return;
+
+    try {
+      const csvRows: string[] = [];
+      
+      // Header
+      csvRows.push('Teilnehmer-ID,Frage,Fragetyp,Antwort,Zeitstempel');
+
+      // Daten
+      responses.forEach((response) => {
+        const question = questions.find((q) => q.id === response.question_id);
+        const option = options[response.question_id]?.find((o) => o.id === response.option_id);
+
+        if (question && option) {
+          const row = [
+            response.participant_id,
+            `"${question.question_text.replace(/"/g, '""')}"`,
+            question.question_type,
+            `"${option.option_text.replace(/"/g, '""')}"`,
+            new Date(response.created_at).toLocaleString('de-DE'),
+          ];
+          csvRows.push(row.join(','));
+        }
+      });
+
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', `${survey.title.replace(/[^a-z0-9]/gi, '_')}_Rohdaten.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      toast.success('CSV erfolgreich exportiert!');
+    } catch (error) {
+      console.error(error);
+      toast.error('Fehler beim Erstellen der CSV');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -260,6 +305,10 @@ const Results = () => {
             <Download className="w-5 h-5 mr-2" />
             {exporting ? 'Erstelle PDF...' : 'Als PDF exportieren'}
           </Button>
+          <Button onClick={exportToCSV} variant="outline">
+            <Download className="w-5 h-5 mr-2" />
+            CSV exportieren
+          </Button>
           <Dialog>
             <DialogTrigger asChild>
               <Button className="bg-blue-600 hover:bg-blue-700">
@@ -272,10 +321,10 @@ const Results = () => {
                 <DialogTitle>Umfrage teilen</DialogTitle>
               </DialogHeader>
               <div className="flex flex-col items-center gap-4 py-4">
-                <div className="bg-white p-4 rounded-lg border-2">
+                <div className="bg-white p-4 rounded-lg border-2" id="qr-code-results-container">
                   <QRCodeSVG value={surveyUrl} size={256} />
                 </div>
-                <div className="w-full">
+                <div className="w-full space-y-2">
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -287,6 +336,40 @@ const Results = () => {
                       <Share2 className="w-4 h-4" />
                     </Button>
                   </div>
+                  <Button 
+                    onClick={() => {
+                      const svg = document.querySelector('#qr-code-results-container svg');
+                      if (!svg || !survey) return;
+                      
+                      const svgData = new XMLSerializer().serializeToString(svg);
+                      const canvas = document.createElement('canvas');
+                      const ctx = canvas.getContext('2d');
+                      const img = new Image();
+                      
+                      img.onload = () => {
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        ctx?.drawImage(img, 0, 0);
+                        canvas.toBlob((blob) => {
+                          if (!blob) return;
+                          const url = URL.createObjectURL(blob);
+                          const link = document.createElement('a');
+                          link.href = url;
+                          link.download = `QR_${survey.title.replace(/[^a-z0-9]/gi, '_')}.png`;
+                          link.click();
+                          URL.revokeObjectURL(url);
+                          toast.success('QR-Code heruntergeladen!');
+                        });
+                      };
+                      
+                      img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+                    }}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    QR-Code als PNG herunterladen
+                  </Button>
                 </div>
               </div>
             </DialogContent>

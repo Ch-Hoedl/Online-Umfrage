@@ -146,6 +146,22 @@ const Dashboard = () => {
     }
   };
 
+  const toggleActive = async (surveyId: string, currentStatus: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('surveys')
+        .update({ is_active: !currentStatus })
+        .eq('id', surveyId);
+
+      if (error) throw error;
+
+      toast.success(currentStatus ? 'Umfrage deaktiviert' : 'Umfrage aktiviert');
+      loadSurveys();
+    } catch (error) {
+      toast.error('Fehler beim Ändern des Status');
+    }
+  };
+
   const suggestedDuplicateTitle = useMemo(() => {
     if (!duplicateSurvey) return '';
     return `${duplicateSurvey.title} (Kopie)`;
@@ -493,13 +509,20 @@ const Dashboard = () => {
                           </p>
                         )}
                       </div>
-                      <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                        survey.is_active
-                          ? 'bg-green-100 text-green-700'
-                          : 'bg-gray-100 text-gray-700'
-                      }`}>
+                      <Button
+                        onClick={() => toggleActive(survey.id, survey.is_active)}
+                        variant="ghost"
+                        size="sm"
+                        className={`px-3 py-1 rounded-full text-xs font-medium ${
+                          survey.is_active
+                            ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                        disabled={isExpired}
+                        title={isExpired ? 'Abgelaufene Umfragen können nicht aktiviert werden' : 'Status ändern'}
+                      >
                         {survey.is_active ? 'Aktiv' : 'Inaktiv'}
-                      </div>
+                      </Button>
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -622,10 +645,10 @@ const Dashboard = () => {
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col items-center gap-4 py-4">
-            <div className="bg-white p-4 rounded-lg border-2">
+            <div className="bg-white p-4 rounded-lg border-2" id="qr-code-container">
               <QRCodeSVG value={`${window.location.origin}/survey/${qrSurvey?.id}`} size={256} />
             </div>
-            <div className="w-full">
+            <div className="w-full space-y-2">
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -637,6 +660,41 @@ const Dashboard = () => {
                   <Share2 className="w-4 h-4" />
                 </Button>
               </div>
+              <Button 
+                onClick={() => {
+                  if (!qrSurvey) return;
+                  const svg = document.querySelector('#qr-code-container svg');
+                  if (!svg) return;
+                  
+                  const svgData = new XMLSerializer().serializeToString(svg);
+                  const canvas = document.createElement('canvas');
+                  const ctx = canvas.getContext('2d');
+                  const img = new Image();
+                  
+                  img.onload = () => {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx?.drawImage(img, 0, 0);
+                    canvas.toBlob((blob) => {
+                      if (!blob) return;
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = `QR_${qrSurvey.title.replace(/[^a-z0-9]/gi, '_')}.png`;
+                      link.click();
+                      URL.revokeObjectURL(url);
+                      toast.success('QR-Code heruntergeladen!');
+                    });
+                  };
+                  
+                  img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+                }}
+                variant="outline"
+                className="w-full"
+              >
+                <Download className="w-4 h-4 mr-2" />
+                QR-Code als PNG herunterladen
+              </Button>
             </div>
           </div>
         </DialogContent>
