@@ -274,6 +274,8 @@ const CreateSurvey = () => {
       let surveyIdToUse = surveyId;
 
       if (isEditMode) {
+        console.log('[CreateSurvey] Edit mode: updating survey', surveyId);
+        
         // Update bestehende Umfrage
         const { error: surveyError } = await supabase
           .from('surveys')
@@ -285,51 +287,70 @@ const CreateSurvey = () => {
           })
           .eq('id', surveyId);
 
-        if (surveyError) throw surveyError;
+        if (surveyError) {
+          console.error('[CreateSurvey] Error updating survey:', surveyError);
+          throw surveyError;
+        }
+
+        console.log('[CreateSurvey] Survey updated, now deleting old questions...');
 
         // Lösche zuerst alle Responses, dann Options, dann Questions
-        const { data: oldQuestions } = await supabase
+        const { data: oldQuestions, error: fetchQuestionsError } = await supabase
           .from('questions')
           .select('id')
           .eq('survey_id', surveyId);
+
+        if (fetchQuestionsError) {
+          console.error('[CreateSurvey] Error fetching old questions:', fetchQuestionsError);
+          throw fetchQuestionsError;
+        }
+
+        console.log('[CreateSurvey] Found old questions:', oldQuestions?.length || 0);
 
         if (oldQuestions && oldQuestions.length > 0) {
           const questionIds = oldQuestions.map((q) => q.id);
 
           // 1. Lösche Responses
+          console.log('[CreateSurvey] Deleting responses...');
           const { error: deleteResponsesError } = await supabase
             .from('responses')
             .delete()
             .in('question_id', questionIds);
 
           if (deleteResponsesError) {
-            console.error('Error deleting responses:', deleteResponsesError);
+            console.error('[CreateSurvey] Error deleting responses:', deleteResponsesError);
             throw deleteResponsesError;
           }
 
           // 2. Lösche Options
+          console.log('[CreateSurvey] Deleting options...');
           const { error: deleteOptionsError } = await supabase
             .from('options')
             .delete()
             .in('question_id', questionIds);
 
           if (deleteOptionsError) {
-            console.error('Error deleting options:', deleteOptionsError);
+            console.error('[CreateSurvey] Error deleting options:', deleteOptionsError);
             throw deleteOptionsError;
           }
 
           // 3. Lösche Questions
+          console.log('[CreateSurvey] Deleting questions...');
           const { error: deleteQuestionsError } = await supabase
             .from('questions')
             .delete()
             .eq('survey_id', surveyId);
 
           if (deleteQuestionsError) {
-            console.error('Error deleting questions:', deleteQuestionsError);
+            console.error('[CreateSurvey] Error deleting questions:', deleteQuestionsError);
             throw deleteQuestionsError;
           }
         }
+
+        console.log('[CreateSurvey] Old data deleted successfully');
       } else {
+        console.log('[CreateSurvey] Create mode: inserting new survey');
+        
         // Neue Umfrage erstellen
         const { data: survey, error: surveyError } = await supabase
           .from('surveys')
@@ -347,9 +368,12 @@ const CreateSurvey = () => {
         surveyIdToUse = survey.id;
       }
 
+      console.log('[CreateSurvey] Inserting questions...');
       // Fragen und Optionen speichern
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        console.log('[CreateSurvey] Inserting question', i + 1, ':', question.question_text);
+        
         const { data: questionData, error: questionError } = await supabase
           .from('questions')
           .insert({
@@ -362,7 +386,10 @@ const CreateSurvey = () => {
           .select()
           .single();
 
-        if (questionError) throw questionError;
+        if (questionError) {
+          console.error('[CreateSurvey] Error inserting question:', questionError);
+          throw questionError;
+        }
 
         if (question.question_type === 'rating') {
           for (let j = 1; j <= 5; j++) {
@@ -374,7 +401,10 @@ const CreateSurvey = () => {
                 order_index: j - 1,
               });
 
-            if (optionError) throw optionError;
+            if (optionError) {
+              console.error('[CreateSurvey] Error inserting rating option:', optionError);
+              throw optionError;
+            }
           }
         } else if (question.question_type !== 'text') {
           for (let j = 0; j < question.options.length; j++) {
@@ -386,16 +416,21 @@ const CreateSurvey = () => {
                 order_index: j,
               });
 
-            if (optionError) throw optionError;
+            if (optionError) {
+              console.error('[CreateSurvey] Error inserting option:', optionError);
+              throw optionError;
+            }
           }
         }
       }
 
+      console.log('[CreateSurvey] All questions and options saved successfully');
       toast.success(isEditMode ? 'Umfrage erfolgreich aktualisiert' : 'Umfrage erfolgreich erstellt');
       navigate('/admin');
     } catch (error) {
-      console.error(error);
-      toast.error('Fehler beim Speichern der Umfrage');
+      console.error('[CreateSurvey] Save error:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Unbekannter Fehler';
+      toast.error(`Fehler beim Speichern: ${errorMsg}`);
     } finally {
       setSaving(false);
     }
