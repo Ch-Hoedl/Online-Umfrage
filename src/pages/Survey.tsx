@@ -58,7 +58,6 @@ const SurveyPage = () => {
     return !submitting && !submitted && !alreadyVoted && !limitReached && !expired;
   }, [alreadyVoted, expired, limitReached, submitted, submitting]);
 
-  // Fortschrittsberechnung - MUSS vor den early returns sein!
   const answeredCount = useMemo(() => {
     let count = 0;
     for (const question of questions) {
@@ -80,6 +79,7 @@ const SurveyPage = () => {
 
   const totalQuestions = questions.length;
   const progressPercent = totalQuestions > 0 ? (answeredCount / totalQuestions) * 100 : 0;
+  const showClosedBanner = expired || limitReached || alreadyVoted;
 
   useEffect(() => {
     loadSurvey();
@@ -90,8 +90,6 @@ const SurveyPage = () => {
     setLoading(true);
 
     try {
-      console.log('[Survey] Loading survey:', id);
-      
       const { data: surveyData, error: surveyError } = await supabase
         .from('surveys')
         .select('*')
@@ -99,17 +97,11 @@ const SurveyPage = () => {
         .eq('is_active', true)
         .single();
 
-      if (surveyError) {
-        console.error('[Survey] Error loading survey:', surveyError);
-        throw surveyError;
-      }
-      
-      console.log('[Survey] Survey loaded:', surveyData.title);
+      if (surveyError) throw surveyError;
       setSurvey(surveyData);
 
       const isExpired = !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
       setExpired(isExpired);
-
       setAlreadyVoted(hasVotedLocally(surveyData.id));
 
       const { data: questionsData, error: questionsError } = await supabase
@@ -118,13 +110,8 @@ const SurveyPage = () => {
         .eq('survey_id', id)
         .order('order_index');
 
-      if (questionsError) {
-        console.error('[Survey] Error loading questions:', questionsError);
-        throw questionsError;
-      }
-      
+      if (questionsError) throw questionsError;
       const loadedQuestions = questionsData || [];
-      console.log('[Survey] Questions loaded:', loadedQuestions.length);
       setQuestions(loadedQuestions);
 
       const questionIds = loadedQuestions.map((q: Question) => q.id);
@@ -135,10 +122,7 @@ const SurveyPage = () => {
           .select('participant_id')
           .in('question_id', questionIds);
 
-        if (respError) {
-          console.error('[Survey] Error loading responses:', respError);
-          throw respError;
-        }
+        if (respError) throw respError;
 
         const participants = new Set((respData || []).map((r) => r.participant_id));
         setParticipantCount(participants.size);
@@ -161,21 +145,14 @@ const SurveyPage = () => {
         .select('*')
         .in('question_id', questionIds);
 
-      if (optionsError) {
-        console.error('[Survey] Error loading options:', optionsError);
-        throw optionsError;
-      }
-
-      console.log('[Survey] Options loaded:', optionsData?.length || 0);
+      if (optionsError) throw optionsError;
 
       const optionsByQuestion: { [key: string]: Option[] } = {};
       
-      // Initialisiere leere Arrays für alle Fragen
       loadedQuestions.forEach((q: Question) => {
         optionsByQuestion[q.id] = [];
       });
 
-      // Füge geladene Optionen hinzu
       optionsData?.forEach((opt) => {
         optionsByQuestion[opt.question_id].push(opt);
       });
@@ -185,12 +162,10 @@ const SurveyPage = () => {
       });
 
       setOptions(optionsByQuestion);
-      console.log('[Survey] Survey loaded successfully');
     } catch (error) {
-      console.error('[Survey] Load survey error:', error);
+      console.error('Load survey error:', error);
       toast.error('Umfrage nicht gefunden oder nicht aktiv');
     } finally {
-      console.log('[Survey] Setting loading to false');
       setLoading(false);
     }
   };
@@ -226,7 +201,6 @@ const SurveyPage = () => {
     const normalized = normalizeTextTerm(term);
     if (!normalized) throw new Error('empty term');
 
-    // 1) Server-seitig prüfen ob Begriff bereits existiert
     const { data: existing, error: existingError } = await supabase
       .from('options')
       .select('*')
@@ -237,7 +211,6 @@ const SurveyPage = () => {
     if (existingError) throw existingError;
     if (existing) return (existing as Option).id;
 
-    // 2) Neu anlegen
     const { data: created, error: createError } = await supabase
       .from('options')
       .insert({
@@ -268,7 +241,6 @@ const SurveyPage = () => {
       return;
     }
 
-    // Validierung
     for (const question of questions) {
       if (question.question_type === 'text') {
         const max = question.max_text_answers ?? 1;
@@ -294,7 +266,6 @@ const SurveyPage = () => {
     try {
       const participantId = getDeviceId();
 
-      // Re-Check kurz vor dem Insert
       const questionIds = questions.map((q) => q.id);
       if (questionIds.length > 0) {
         const { data: respData, error: respError } = await supabase
@@ -320,7 +291,6 @@ const SurveyPage = () => {
         }
       }
 
-      // Antworten speichern
       for (const question of questions) {
         if (question.question_type === 'text') {
           const max = question.max_text_answers ?? 1;
@@ -362,11 +332,6 @@ const SurveyPage = () => {
       setSubmitting(false);
     }
   };
-
-  // Fortschrittsberechnung
-  const showClosedBanner = expired || limitReached || alreadyVoted;
-  const totalQuestionsCount = questions.length;
-  const progressPercent = totalQuestionsCount > 0 ? (answeredCount / totalQuestionsCount) * 100 : 0;
 
   if (loading) {
     return (
@@ -418,13 +383,13 @@ const SurveyPage = () => {
           )}
         </div>
 
-        {!showClosedBanner && totalQuestionsCount > 0 && (
+        {!showClosedBanner && totalQuestions > 0 && (
           <Card className="mb-6">
             <CardContent className="pt-6">
               <div className="space-y-2">
                 <div className="flex justify-between text-sm text-gray-600">
                   <span>Fortschritt</span>
-                  <span>{answeredCount} von {totalQuestionsCount} Fragen beantwortet</span>
+                  <span>{answeredCount} von {totalQuestions} Fragen beantwortet</span>
                 </div>
                 <Progress value={progressPercent} className="h-2" />
               </div>
