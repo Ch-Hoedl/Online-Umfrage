@@ -58,6 +58,29 @@ const SurveyPage = () => {
     return !submitting && !submitted && !alreadyVoted && !limitReached && !expired;
   }, [alreadyVoted, expired, limitReached, submitted, submitting]);
 
+  // Fortschrittsberechnung - MUSS vor den early returns sein!
+  const answeredCount = useMemo(() => {
+    let count = 0;
+    for (const question of questions) {
+      if (question.question_type === 'text') {
+        const max = question.max_text_answers ?? 1;
+        const terms = (answers[question.id] || [])
+          .slice(0, max)
+          .map(normalizeTextTerm)
+          .filter(Boolean);
+        if (terms.length > 0) count++;
+      } else {
+        if (answers[question.id] && answers[question.id].length > 0) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }, [answers, questions]);
+
+  const totalQuestions = questions.length;
+  const progressPercent = totalQuestions > 0 ? (answeredCount / totalQuestions) * 100 : 0;
+
   useEffect(() => {
     loadSurvey();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,9 +177,6 @@ const SurveyPage = () => {
 
       // Füge geladene Optionen hinzu
       optionsData?.forEach((opt) => {
-        if (!optionsByQuestion[opt.question_id]) {
-          optionsByQuestion[opt.question_id] = [];
-        }
         optionsByQuestion[opt.question_id].push(opt);
       });
 
@@ -343,6 +363,11 @@ const SurveyPage = () => {
     }
   };
 
+  // Fortschrittsberechnung
+  const showClosedBanner = expired || limitReached || alreadyVoted;
+  const totalQuestionsCount = questions.length;
+  const progressPercent = totalQuestionsCount > 0 ? (answeredCount / totalQuestionsCount) * 100 : 0;
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
@@ -380,31 +405,6 @@ const SurveyPage = () => {
     );
   }
 
-  const showClosedBanner = expired || limitReached || alreadyVoted;
-
-  // Fortschrittsberechnung
-  const answeredCount = useMemo(() => {
-    let count = 0;
-    for (const question of questions) {
-      if (question.question_type === 'text') {
-        const max = question.max_text_answers ?? 1;
-        const terms = (answers[question.id] || [])
-          .slice(0, max)
-          .map(normalizeTextTerm)
-          .filter(Boolean);
-        if (terms.length > 0) count++;
-      } else {
-        if (answers[question.id] && answers[question.id].length > 0) {
-          count++;
-        }
-      }
-    }
-    return count;
-  }, [answers, questions]);
-
-  const totalQuestions = questions.length;
-  const progressPercent = totalQuestions > 0 ? (answeredCount / totalQuestions) * 100 : 0;
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
       <div className="container mx-auto px-4 max-w-3xl">
@@ -418,13 +418,13 @@ const SurveyPage = () => {
           )}
         </div>
 
-        {!showClosedBanner && totalQuestions > 0 && (
+        {!showClosedBanner && totalQuestionsCount > 0 && (
           <Card className="mb-6">
             <CardContent className="pt-6">
               <div className="space-y-2">
                 <div className="flex justify-between text-sm text-gray-600">
                   <span>Fortschritt</span>
-                  <span>{answeredCount} von {totalQuestions} Fragen beantwortet</span>
+                  <span>{answeredCount} von {totalQuestionsCount} Fragen beantwortet</span>
                 </div>
                 <Progress value={progressPercent} className="h-2" />
               </div>
