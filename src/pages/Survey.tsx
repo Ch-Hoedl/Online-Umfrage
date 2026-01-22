@@ -67,6 +67,8 @@ const SurveyPage = () => {
     setLoading(true);
 
     try {
+      console.log('[Survey] Loading survey:', id);
+      
       const { data: surveyData, error: surveyError } = await supabase
         .from('surveys')
         .select('*')
@@ -74,7 +76,12 @@ const SurveyPage = () => {
         .eq('is_active', true)
         .single();
 
-      if (surveyError) throw surveyError;
+      if (surveyError) {
+        console.error('[Survey] Error loading survey:', surveyError);
+        throw surveyError;
+      }
+      
+      console.log('[Survey] Survey loaded:', surveyData.title);
       setSurvey(surveyData);
 
       const isExpired = !!surveyData.expires_at && new Date(surveyData.expires_at).getTime() <= Date.now();
@@ -88,8 +95,13 @@ const SurveyPage = () => {
         .eq('survey_id', id)
         .order('order_index');
 
-      if (questionsError) throw questionsError;
+      if (questionsError) {
+        console.error('[Survey] Error loading questions:', questionsError);
+        throw questionsError;
+      }
+      
       const loadedQuestions = questionsData || [];
+      console.log('[Survey] Questions loaded:', loadedQuestions.length);
       setQuestions(loadedQuestions);
 
       const questionIds = loadedQuestions.map((q: Question) => q.id);
@@ -100,7 +112,10 @@ const SurveyPage = () => {
           .select('participant_id')
           .in('question_id', questionIds);
 
-        if (respError) throw respError;
+        if (respError) {
+          console.error('[Survey] Error loading responses:', respError);
+          throw respError;
+        }
 
         const participants = new Set((respData || []).map((r) => r.participant_id));
         setParticipantCount(participants.size);
@@ -123,7 +138,12 @@ const SurveyPage = () => {
         .select('*')
         .in('question_id', questionIds);
 
-      if (optionsError) throw optionsError;
+      if (optionsError) {
+        console.error('[Survey] Error loading options:', optionsError);
+        throw optionsError;
+      }
+
+      console.log('[Survey] Options loaded:', optionsData?.length || 0);
 
       const optionsByQuestion: { [key: string]: Option[] } = {};
       optionsData?.forEach((opt) => {
@@ -138,10 +158,12 @@ const SurveyPage = () => {
       });
 
       setOptions(optionsByQuestion);
+      console.log('[Survey] Survey loaded successfully');
     } catch (error) {
-      console.error('Load survey error:', error);
+      console.error('[Survey] Load survey error:', error);
       toast.error('Umfrage nicht gefunden oder nicht aktiv');
     } finally {
+      console.log('[Survey] Setting loading to false');
       setLoading(false);
     }
   };
