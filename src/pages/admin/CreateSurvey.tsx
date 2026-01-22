@@ -287,13 +287,48 @@ const CreateSurvey = () => {
 
         if (surveyError) throw surveyError;
 
-        // Lösche alte Fragen und Optionen (einfacher als komplexes Update)
-        const { error: deleteQuestionsError } = await supabase
+        // Lösche zuerst alle Responses, dann Options, dann Questions
+        const { data: oldQuestions } = await supabase
           .from('questions')
-          .delete()
+          .select('id')
           .eq('survey_id', surveyId);
 
-        if (deleteQuestionsError) throw deleteQuestionsError;
+        if (oldQuestions && oldQuestions.length > 0) {
+          const questionIds = oldQuestions.map((q) => q.id);
+
+          // 1. Lösche Responses
+          const { error: deleteResponsesError } = await supabase
+            .from('responses')
+            .delete()
+            .in('question_id', questionIds);
+
+          if (deleteResponsesError) {
+            console.error('Error deleting responses:', deleteResponsesError);
+            throw deleteResponsesError;
+          }
+
+          // 2. Lösche Options
+          const { error: deleteOptionsError } = await supabase
+            .from('options')
+            .delete()
+            .in('question_id', questionIds);
+
+          if (deleteOptionsError) {
+            console.error('Error deleting options:', deleteOptionsError);
+            throw deleteOptionsError;
+          }
+
+          // 3. Lösche Questions
+          const { error: deleteQuestionsError } = await supabase
+            .from('questions')
+            .delete()
+            .eq('survey_id', surveyId);
+
+          if (deleteQuestionsError) {
+            console.error('Error deleting questions:', deleteQuestionsError);
+            throw deleteQuestionsError;
+          }
+        }
       } else {
         // Neue Umfrage erstellen
         const { data: survey, error: surveyError } = await supabase
