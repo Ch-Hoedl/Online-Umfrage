@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
 
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
 const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
@@ -352,6 +353,29 @@ const SurveyPage = () => {
 
   const showClosedBanner = expired || limitReached || alreadyVoted;
 
+  // Fortschrittsberechnung
+  const answeredCount = useMemo(() => {
+    let count = 0;
+    for (const question of questions) {
+      if (question.question_type === 'text') {
+        const max = question.max_text_answers ?? 1;
+        const terms = (answers[question.id] || [])
+          .slice(0, max)
+          .map(normalizeTextTerm)
+          .filter(Boolean);
+        if (terms.length > 0) count++;
+      } else {
+        if (answers[question.id] && answers[question.id].length > 0) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }, [answers, questions]);
+
+  const totalQuestions = questions.length;
+  const progressPercent = totalQuestions > 0 ? (answeredCount / totalQuestions) * 100 : 0;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
       <div className="container mx-auto px-4 max-w-3xl">
@@ -364,6 +388,20 @@ const SurveyPage = () => {
             <p className="text-lg text-gray-600">{survey.description}</p>
           )}
         </div>
+
+        {!showClosedBanner && totalQuestions > 0 && (
+          <Card className="mb-6">
+            <CardContent className="pt-6">
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm text-gray-600">
+                  <span>Fortschritt</span>
+                  <span>{answeredCount} von {totalQuestions} Fragen beantwortet</span>
+                </div>
+                <Progress value={progressPercent} className="h-2" />
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {showClosedBanner && (
           <Card className="mb-6 border-amber-200 bg-amber-50">
