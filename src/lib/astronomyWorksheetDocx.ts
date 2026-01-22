@@ -11,7 +11,7 @@ import {
   WidthType,
 } from "docx";
 
-function h(text: string, level: HeadingLevel) {
+function h(text: string, level: typeof HeadingLevel[keyof typeof HeadingLevel]) {
   return new Paragraph({
     text,
     heading: level,
