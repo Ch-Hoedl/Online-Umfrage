@@ -146,6 +146,13 @@ const SurveyPage = () => {
       console.log('[Survey] Options loaded:', optionsData?.length || 0);
 
       const optionsByQuestion: { [key: string]: Option[] } = {};
+      
+      // Initialisiere leere Arrays für alle Fragen
+      loadedQuestions.forEach((q: Question) => {
+        optionsByQuestion[q.id] = [];
+      });
+
+      // Füge geladene Optionen hinzu
       optionsData?.forEach((opt) => {
         if (!optionsByQuestion[opt.question_id]) {
           optionsByQuestion[opt.question_id] = [];
