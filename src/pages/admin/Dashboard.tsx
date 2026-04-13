@@ -71,7 +71,12 @@ const Dashboard = () => {
   const { signOut, user, profile } = useAuth();
 
   const drafts = useMemo(() => surveys.filter((s) => s.status === 'draft'), [surveys]);
-  const published = useMemo(() => surveys.filter((s) => s.status === 'published'), [surveys]);
+  
+  // Published surveys: only show surveys created by current user
+  const published = useMemo(() =>
+    surveys.filter((s) => s.status === 'published' && s.created_by === user?.id),
+    [surveys, user?.id]
+  );
   
   // Private templates: created by current user
   const privateTemplates = useMemo(() =>
