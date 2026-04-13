@@ -45,5 +45,6 @@ export interface Profile {
   email: string | null;
   full_name: string | null;
   role: 'user' | 'admin' | 'super_admin';
+  approved: boolean;
   created_at: string;
 }

@@ -53,6 +53,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
   const [responseCounts, setResponseCounts] = useState<{ [surveyId: string]: number }>({});
+  const [pendingCount, setPendingCount] = useState(0);
 
   // dialogs
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; status: 'draft' | 'published'; title: string } | null>(null);
@@ -75,7 +76,19 @@ const Dashboard = () => {
   useEffect(() => {
     loadUserProfile();
     loadSurveys();
+    loadPendingCount();
   }, []);
+
+  const loadPendingCount = async () => {
+    try {
+      const { count } = await supabase
+        .from('profiles')
+        .select('*', { count: 'exact', head: true })
+        .eq('approved', false)
+        .neq('role', 'super_admin');
+      setPendingCount(count ?? 0);
+    } catch { /* ignore */ }
+  };
 
   // ── data ────────────────────────────────────────────────────────────────────
 
@@ -525,9 +538,14 @@ const Dashboard = () => {
           </div>
           <div className="flex gap-3 flex-wrap justify-end">
             {userProfile?.role === 'super_admin' && (
-              <Button onClick={() => navigate('/admin/users')} variant="outline" size="lg">
+              <Button onClick={() => navigate('/admin/users')} variant="outline" size="lg" className="relative">
                 <Users className="w-5 h-5 mr-2" />
                 Benutzer
+                {pendingCount > 0 && (
+                  <span className="absolute -top-2 -right-2 bg-amber-500 text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">
+                    {pendingCount}
+                  </span>
+                )}
               </Button>
             )}
             <Button onClick={() => navigate('/admin/create')} size="lg" className="bg-blue-600 hover:bg-blue-700">
