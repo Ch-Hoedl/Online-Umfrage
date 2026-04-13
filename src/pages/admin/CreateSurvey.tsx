@@ -260,7 +260,7 @@ const CreateSurvey = () => {
         const m = Number(q.text_max_answers);
         if (!Number.isFinite(m) || m < 1 || m > 10) { toast.error('Max. Antworten muss zwischen 1 und 10 liegen'); return false; }
       }
-      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.options.some((o) => !o.text.trim())) {
+      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext' && q.options.some((o) => !o.text.trim())) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false;
       }
     }
@@ -332,6 +332,8 @@ const CreateSurvey = () => {
         // Store meta-option for legacy compatibility
         const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
         if (error) throw error;
+      } else if (question.question_type === 'longtext') {
+        // No options needed for longtext - participants write free text
       } else {
         for (let j = 0; j < question.options.length; j++) {
           const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: question.options[j].text, order_index: j });
@@ -470,6 +472,7 @@ const CreateSurvey = () => {
                           <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
                           <SelectItem value="rating">Bewertung (1-5)</SelectItem>
                           <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
+                          <SelectItem value="longtext">Offene Frage (Freier Text)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -484,7 +487,7 @@ const CreateSurvey = () => {
                       </div>
                     )}
 
-                    {question.question_type !== 'rating' && question.question_type !== 'text' && (
+                    {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && (
                       <div>
                         <Label>Antwortmöglichkeiten *</Label>
                         <div className="space-y-2 mt-2">
@@ -507,6 +510,10 @@ const CreateSurvey = () => {
 
                     {question.question_type === 'rating' && (
                       <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
+                    )}
+
+                    {question.question_type === 'longtext' && (
+                      <p className="text-sm text-gray-600">Teilnehmer können mit bis zu 2048 Zeichen frei antworten.</p>
                     )}
 
                     {/* Checkboxes */}

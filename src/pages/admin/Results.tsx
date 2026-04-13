@@ -129,6 +129,16 @@ const Results = () => {
     return (options[questionId] || []).some((o) => isTextMetaOption(o.option_text));
   };
 
+  const isLongTextQuestion = (questionId: string) => {
+    const q = questions.find((q) => q.id === questionId);
+    return q?.question_type === 'longtext';
+  };
+
+  const getLongTextResponses = (questionId: string): string[] =>
+    filterResponses(responses.filter((r) => r.question_id === questionId && r.text_response && !r.option_id))
+      .map((r) => r.text_response as string)
+      .filter(Boolean);
+
   const hasComments = (questionId: string) =>
     (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
 
@@ -220,6 +230,36 @@ const Results = () => {
               yPosition += 5;
             });
           }
+        } else if (isLongTextQuestion(question.id)) {
+          const longTextResponses = getLongTextResponses(question.id);
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'normal');
+
+          if (longTextResponses.length === 0) {
+            pdf.text('Noch keine Antworten.', margin + 5, yPosition);
+            yPosition += 6;
+          } else {
+            longTextResponses.forEach((text, idx) => {
+              if (yPosition > pageHeight - 30) {
+                pdf.addPage();
+                yPosition = margin;
+              }
+              pdf.setFont('helvetica', 'bold');
+              pdf.text(`Antwort ${idx + 1}:`, margin + 5, yPosition);
+              yPosition += 5;
+              pdf.setFont('helvetica', 'normal');
+              const lines = pdf.splitTextToSize(text, pageWidth - 2 * margin - 10);
+              lines.forEach((line: string) => {
+                if (yPosition > pageHeight - 20) {
+                  pdf.addPage();
+                  yPosition = margin;
+                }
+                pdf.text(line, margin + 5, yPosition);
+                yPosition += 4;
+              });
+              yPosition += 3;
+            });
+          }
         } else {
           const chartData = getChartData(question.id);
           pdf.setFontSize(10);
@@ -260,6 +300,20 @@ const Results = () => {
       // Daten
       responses.forEach((response) => {
         const question = questions.find((q) => q.id === response.question_id);
+        
+        // Handle longtext responses
+        if (question && response.text_response && !response.option_id && isLongTextQuestion(question.id)) {
+          const row = [
+            response.participant_id,
+            `"${question.question_text.replace(/"/g, '""')}"`,
+            question.question_type,
+            `"${response.text_response.replace(/"/g, '""')}"`,
+            new Date(response.created_at).toLocaleString('de-DE'),
+          ];
+          csvRows.push(row.join(','));
+          return;
+        }
+
         const option = options[response.question_id]?.find((o) => o.id === response.option_id);
 
         if (question && option && !isMetaOption(option.option_text)) {
@@ -579,6 +633,38 @@ const Results = () => {
                       </div>
                     )}
                     <CommentsSection questionId={question.id} />
+                  </CardContent>
+                </Card>
+              );
+            }
+
+            if (isLongTextQuestion(question.id)) {
+              const longTextResponses = getLongTextResponses(question.id);
+              return (
+                <Card key={question.id}>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      {question.question_text}
+                      <Badge className="bg-gray-100 text-gray-700 border-gray-300 text-xs">
+                        Freier Text
+                      </Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {longTextResponses.length === 0 ? (
+                      <p className="text-sm text-gray-500">Noch keine Antworten.</p>
+                    ) : (
+                      <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                        {longTextResponses.map((text, i) => (
+                          <div key={i} className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+                            {text}
+                          </div>
+                        ))}
+                        <p className="text-xs text-gray-500 mt-2">
+                          {longTextResponses.length} {longTextResponses.length === 1 ? 'Antwort' : 'Antworten'}
+                        </p>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
@@ -159,6 +160,11 @@ const SurveyPage = () => {
     return (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
   };
 
+  const isLongTextQuestion = (qid: string) => {
+    const q = questions.find((q) => q.id === qid);
+    return q?.question_type === 'longtext';
+  };
+
   const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
   // ── answer handlers ───────────────────────────────────────────────────────────
@@ -183,6 +189,11 @@ const SurveyPage = () => {
       return { ...prev, [qid]: next };
     });
   };
+
+  const handleLongTextChange = (qid: string, value: string) => {
+    if (!canVote) return;
+    setAnswers((prev) => ({ ...prev, [qid]: [value] }));
+  };
   const handleCommentChange = (qid: string, value: string) => {
     if (!canVote) return;
     setComments((prev) => ({ ...prev, [qid]: value }));
@@ -196,6 +207,10 @@ const SurveyPage = () => {
     if (isTextQuestion(q.id)) {
       const terms = (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean);
       return terms.length > 0;
+    }
+    if (isLongTextQuestion(q.id)) {
+      const text = (answers[q.id]?.[0] || '').trim();
+      return text.length > 0;
     }
     return (answers[q.id] || []).length > 0;
   };
@@ -234,6 +249,11 @@ const SurveyPage = () => {
         if (terms.length === 0) { toast.error('Bitte beantworten Sie alle Fragen'); setCurrentIndex(questions.indexOf(question)); return; }
         continue;
       }
+      if (isLongTextQuestion(question.id)) {
+        const text = (answers[question.id]?.[0] || '').trim();
+        if (text.length === 0) { toast.error('Bitte beantworten Sie alle Fragen'); setCurrentIndex(questions.indexOf(question)); return; }
+        continue;
+      }
       if (!answers[question.id] || answers[question.id].length === 0) {
         toast.error('Bitte beantworten Sie alle Fragen');
         setCurrentIndex(questions.indexOf(question));
@@ -261,6 +281,12 @@ const SurveyPage = () => {
           for (const term of terms) {
             const optionId = await getOrCreateTextOptionId(question.id, term);
             const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId });
+            if (error) throw error;
+          }
+        } else if (isLongTextQuestion(question.id)) {
+          const text = (answers[question.id]?.[0] || '').trim().slice(0, 2048);
+          if (text) {
+            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: text });
             if (error) throw error;
           }
         } else {
@@ -378,6 +404,7 @@ const SurveyPage = () => {
               const qid = currentQuestion.id;
               const visibleOptions = getVisibleOptions(qid);
               const textQuestion = isTextQuestion(qid);
+              const longTextQuestion = isLongTextQuestion(qid);
               const textMax = textQuestion ? getTextMaxAnswers(qid) : 0;
 
               return (
@@ -391,9 +418,10 @@ const SurveyPage = () => {
                         <CardTitle className="text-xl leading-snug">{currentQuestion.question_text}</CardTitle>
                         <CardDescription className="mt-1">
                           {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
-                          {!textQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                          {!textQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                          {!textQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                          {longTextQuestion && 'Schreiben Sie Ihre Antwort (bis zu 2048 Zeichen)'}
+                          {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
+                          {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
+                          {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
                         </CardDescription>
                       </div>
                     </div>
@@ -487,6 +515,22 @@ const SurveyPage = () => {
                       </div>
                     )}
 
+                    {/* Long text / free text */}
+                    {longTextQuestion && (
+                      <div className="space-y-2">
+                        <Textarea
+                          value={answers[qid]?.[0] || ''}
+                          onChange={(e) => handleLongTextChange(qid, e.target.value)}
+                          placeholder="Schreiben Sie hier Ihre ausführliche Antwort…"
+                          disabled={!canVote}
+                          maxLength={2048}
+                          rows={8}
+                          className="resize-none"
+                        />
+                        <p className="text-xs text-gray-400 text-right">{(answers[qid]?.[0] || '').length}/2048 Zeichen</p>
+                      </div>
+                    )}
+
                     {/* Comment field */}
                     {hasCommentOption(qid) && (
                       <div className="mt-5 pt-4 border-t border-gray-100">
@@ -529,6 +573,8 @@ const SurveyPage = () => {
                 {questions.map((q, i) => {
                   const answered = isTextQuestion(q.id)
                     ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
+                    : isLongTextQuestion(q.id)
+                    ? (answers[q.id]?.[0] || '').trim().length > 0
                     : (answers[q.id] || []).length > 0;
                   return (
                     <button
