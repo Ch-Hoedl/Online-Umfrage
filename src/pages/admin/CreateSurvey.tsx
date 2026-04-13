@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Profile, Question, Option } from '@/integrations/supabase/types';
+import { Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -71,27 +71,23 @@ const CreateSurvey = () => {
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(isEditMode);
-  const [userProfile, setUserProfile] = useState<Profile | null>(null);
 
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const draggedIndex = useRef<number>(-1);
 
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
 
-  useEffect(() => { loadUserProfile(); }, []);
+  useEffect(() => {
+    // Redirect if not an admin
+    if (profile && profile.role === 'user') {
+      toast.error('Keine Berechtigung');
+      navigate('/admin');
+    }
+  }, [profile]);
+
   useEffect(() => { if (isEditMode && editId) loadExistingSurvey(editId); }, [editId]);
-
-  const loadUserProfile = async () => {
-    if (!user) return;
-    try {
-      const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-      if (error) throw error;
-      setUserProfile(data);
-      if (data.role === 'user') { toast.error('Keine Berechtigung'); navigate('/admin'); }
-    } catch { toast.error('Fehler beim Laden des Benutzerprofils'); navigate('/admin'); }
-  };
 
   const loadExistingSurvey = async (surveyId: string) => {
     setLoadingData(true);

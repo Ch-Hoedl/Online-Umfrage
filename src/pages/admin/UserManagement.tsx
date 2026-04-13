@@ -18,33 +18,19 @@ import {
 const UserManagement = () => {
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null);
   const [deleting, setDeleting] = useState(false);
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, profile: currentUserProfile } = useAuth();
 
   useEffect(() => {
-    loadCurrentUser();
-    loadUsers();
-  }, []);
-
-  const loadCurrentUser = async () => {
-    if (!user) return;
-    try {
-      const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-      if (error) throw error;
-      if (data.role !== 'super_admin') {
-        toast.error('Zugriff verweigert');
-        navigate('/admin');
-        return;
-      }
-      setCurrentUserProfile(data as Profile);
-    } catch {
-      toast.error('Fehler beim Laden des Benutzerprofils');
+    if (currentUserProfile && currentUserProfile.role !== 'super_admin') {
+      toast.error('Zugriff verweigert');
       navigate('/admin');
+      return;
     }
-  };
+    loadUsers();
+  }, [currentUserProfile]);
 
   const loadUsers = async () => {
     try {

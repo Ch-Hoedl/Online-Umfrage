@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Survey, Profile, Question, Option } from '@/integrations/supabase/types';
+import { Survey, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -51,7 +51,6 @@ function isExpired(iso: string | null | undefined): boolean {
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
   const [loading, setLoading] = useState(true);
-  const [userProfile, setUserProfile] = useState<Profile | null>(null);
   const [responseCounts, setResponseCounts] = useState<{ [surveyId: string]: number }>({});
   const [pendingCount, setPendingCount] = useState(0);
 
@@ -68,16 +67,22 @@ const Dashboard = () => {
   const [shareSurveyTitle, setShareSurveyTitle] = useState<string>('');
 
   const navigate = useNavigate();
-  const { signOut, user } = useAuth();
+  // Use profile from AuthContext — no extra DB call needed
+  const { signOut, user, profile } = useAuth();
 
   const drafts = useMemo(() => surveys.filter((s) => s.status === 'draft'), [surveys]);
   const published = useMemo(() => surveys.filter((s) => s.status === 'published'), [surveys]);
 
   useEffect(() => {
-    loadUserProfile();
     loadSurveys();
-    loadPendingCount();
   }, []);
+
+  // Load pending count only for super_admins
+  useEffect(() => {
+    if (profile?.role === 'super_admin') {
+      loadPendingCount();
+    }
+  }, [profile]);
 
   const loadPendingCount = async () => {
     try {
@@ -91,16 +96,6 @@ const Dashboard = () => {
   };
 
   // ── data ────────────────────────────────────────────────────────────────────
-
-  const loadUserProfile = async () => {
-    if (!user) return;
-    try {
-      const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
-      if (error) throw error;
-      setUserProfile(data);
-      if (data.role === 'user') { toast.error('Keine Berechtigung'); signOut(); }
-    } catch { toast.error('Fehler beim Laden des Benutzerprofils'); }
-  };
 
   const loadSurveys = async () => {
     try {
@@ -171,17 +166,12 @@ const Dashboard = () => {
     finally { setDeleteTarget(null); setDeleteResponseCount(null); }
   };
 
-  /**
-   * Produktiv schalten: Die Vorlage bleibt als Draft erhalten.
-   * Es wird eine interne Kopie erstellt, die sofort auf "published" gesetzt wird.
-   */
   const handlePublish = async () => {
     if (!publishSurvey || !user?.id) return;
     setPublishing(true);
     try {
       const now = new Date().toISOString();
 
-      // 1. Neue Kopie als "published" anlegen
       const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
@@ -197,7 +187,6 @@ const Dashboard = () => {
         .select('*').single();
       if (surveyError) throw surveyError;
 
-      // 2. Fragen kopieren
       const { data: questions, error: qErr } = await supabase
         .from('questions').select('*').eq('survey_id', publishSurvey.id).order('order_index');
       if (qErr) throw qErr;
@@ -220,7 +209,6 @@ const Dashboard = () => {
         qIdMap.set(q.id, iq.id);
       }
 
-      // 3. Optionen kopieren
       const oldQIds = oldQuestions.map((q) => q.id);
       if (oldQIds.length > 0) {
         const { data: options, error: oErr } = await supabase
@@ -367,44 +355,29 @@ const Dashboard = () => {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {/* Timestamp */}
         <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
           <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
           <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp(survey.updated_at || survey.created_at)}</span></span>
         </div>
         <div className="flex gap-2">
-          <Button
-            onClick={() => navigate(`/admin/edit/${survey.id}`)}
-            variant="outline"
-            className="flex-1 border-amber-300 hover:bg-amber-50"
-          >
-            <Edit className="w-4 h-4 mr-2" />
-            Bearbeiten
+          <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-amber-300 hover:bg-amber-50">
+            <Edit className="w-4 h-4 mr-2" />Bearbeiten
           </Button>
-          <Button
-            onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }}
-            variant="outline" size="icon" title="Als neue Vorlage duplizieren"
-          >
+          <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" size="icon" title="Duplizieren">
             <Copy className="w-4 h-4" />
           </Button>
-          <Button
-            onClick={() => openDeleteDialog(survey)}
-            variant="outline" size="icon"
-            className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen"
-          >
+          <Button onClick={() => openDeleteDialog(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen">
             <Trash2 className="w-4 h-4" />
           </Button>
         </div>
         <Button onClick={() => setPublishSurvey(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
-          <Rocket className="w-4 h-4 mr-2" />
-          Produktiv schalten
+          <Rocket className="w-4 h-4 mr-2" />Produktiv schalten
         </Button>
       </CardContent>
     </Card>
   );
 
   const SurveyCardPublished = ({ survey }: { survey: Survey }) => {
-    const url = `${window.location.origin}/survey/${survey.id}`;
     const count = responseCounts[survey.id] ?? null;
     const expired = isExpired(survey.expires_at);
     return (
@@ -416,15 +389,12 @@ const Dashboard = () => {
                 <Rocket className="w-4 h-4 text-green-600 flex-shrink-0" />
                 <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
               </div>
-              <CardDescription className="line-clamp-2">
-                {survey.description || 'Keine Beschreibung'}
-              </CardDescription>
+              <CardDescription className="line-clamp-2">{survey.description || 'Keine Beschreibung'}</CardDescription>
             </div>
             <Badge className="bg-green-100 text-green-700 border-green-300 flex-shrink-0">Produktiv</Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
-          {/* Teilnehmeranzahl */}
           <div className="flex items-center gap-1.5 text-xs bg-green-50 border border-green-100 rounded-lg px-3 py-2">
             <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-green-600" />
             <span className="text-gray-600">Teilnehmer:</span>
@@ -432,14 +402,10 @@ const Dashboard = () => {
               ? <span className="text-gray-400 italic">wird geladen…</span>
               : <span className="font-semibold text-green-700">{count} {count === 1 ? 'Person' : 'Personen'}</span>}
           </div>
-
-          {/* Produktiv seit */}
           <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
             <CalendarClock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
             <span>Produktiv seit: <span className="font-medium text-gray-700">{formatTimestamp(survey.published_at)}</span></span>
           </div>
-
-          {/* Ablaufdatum */}
           {survey.expires_at && (
             <div className={`flex items-center gap-1.5 text-xs rounded-lg px-3 py-2 ${expired ? 'bg-red-50 border border-red-100' : 'bg-blue-50 border border-blue-100'}`}>
               <CalendarX2 className={`w-3.5 h-3.5 flex-shrink-0 ${expired ? 'text-red-500' : 'text-blue-500'}`} />
@@ -450,41 +416,20 @@ const Dashboard = () => {
               {expired && <span className="ml-auto bg-red-100 text-red-700 text-xs px-1.5 py-0.5 rounded-full font-semibold">Abgelaufen</span>}
             </div>
           )}
-
           <div className="flex gap-2 pt-1">
-            <Button
-              onClick={() => navigate(`/admin/results/${survey.id}`)}
-              variant="outline"
-              className="flex-1 border-green-300 hover:bg-green-50"
-            >
-              <Eye className="w-4 h-4 mr-2" />
-              Auswertung
+            <Button onClick={() => navigate(`/admin/results/${survey.id}`)} variant="outline" className="flex-1 border-green-300 hover:bg-green-50">
+              <Eye className="w-4 h-4 mr-2" />Auswertung
             </Button>
-            <Button
-              onClick={() => navigate(`/admin/preview/${survey.id}`)}
-              variant="outline" size="icon" title="Vorschau"
-              className="border-blue-300 hover:bg-blue-50 text-blue-600"
-            >
+            <Button onClick={() => navigate(`/admin/preview/${survey.id}`)} variant="outline" size="icon" title="Vorschau" className="border-blue-300 hover:bg-blue-50 text-blue-600">
               <ScanEye className="w-4 h-4" />
             </Button>
-            <Button
-              onClick={() => openShareDialog(survey)}
-              variant="outline" size="icon" title="Teilen / QR-Code"
-              className="border-green-300 hover:bg-green-50"
-            >
+            <Button onClick={() => openShareDialog(survey)} variant="outline" size="icon" title="Teilen / QR-Code" className="border-green-300 hover:bg-green-50">
               <QrCode className="w-4 h-4" />
             </Button>
-            <Button
-              onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }}
-              variant="outline" size="icon" title="Als neue Vorlage duplizieren"
-            >
+            <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" size="icon" title="Duplizieren">
               <Copy className="w-4 h-4" />
             </Button>
-            <Button
-              onClick={() => openDeleteDialog(survey)}
-              variant="outline" size="icon"
-              className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen"
-            >
+            <Button onClick={() => openDeleteDialog(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen">
               <Trash2 className="w-4 h-4" />
             </Button>
           </div>
@@ -500,21 +445,16 @@ const Dashboard = () => {
   const EmptyState = ({ mode }: { mode: 'draft' | 'published' }) => (
     <Card className="border-2 border-dashed col-span-full">
       <CardContent className="flex flex-col items-center justify-center py-16">
-        {mode === 'draft'
-          ? <FileText className="w-16 h-16 text-amber-400 mb-4" />
-          : <Rocket className="w-16 h-16 text-green-400 mb-4" />}
+        {mode === 'draft' ? <FileText className="w-16 h-16 text-amber-400 mb-4" /> : <Rocket className="w-16 h-16 text-green-400 mb-4" />}
         <h3 className="text-xl font-semibold text-gray-900 mb-2">
           {mode === 'draft' ? 'Keine Vorlagen vorhanden' : 'Keine produktiven Umfragen'}
         </h3>
         <p className="text-gray-600 mb-6 text-center max-w-sm">
-          {mode === 'draft'
-            ? 'Erstellen Sie eine neue Vorlage und gestalten Sie Ihre Umfrage.'
-            : 'Schalten Sie eine Vorlage produktiv, um sie mit Teilnehmern zu teilen.'}
+          {mode === 'draft' ? 'Erstellen Sie eine neue Vorlage und gestalten Sie Ihre Umfrage.' : 'Schalten Sie eine Vorlage produktiv, um sie mit Teilnehmern zu teilen.'}
         </p>
         {mode === 'draft' && (
           <Button onClick={() => navigate('/admin/create')} className="bg-blue-600 hover:bg-blue-700">
-            <Plus className="w-5 h-5 mr-2" />
-            Neue Vorlage erstellen
+            <Plus className="w-5 h-5 mr-2" />Neue Vorlage erstellen
           </Button>
         )}
       </CardContent>
@@ -537,7 +477,7 @@ const Dashboard = () => {
             </div>
           </div>
           <div className="flex gap-3 flex-wrap justify-end">
-            {userProfile?.role === 'super_admin' && (
+            {profile?.role === 'super_admin' && (
               <Button onClick={() => navigate('/admin/users')} variant="outline" size="lg" className="relative">
                 <Users className="w-5 h-5 mr-2" />
                 Benutzer
@@ -549,12 +489,10 @@ const Dashboard = () => {
               </Button>
             )}
             <Button onClick={() => navigate('/admin/create')} size="lg" className="bg-blue-600 hover:bg-blue-700">
-              <Plus className="w-5 h-5 mr-2" />
-              Neue Vorlage
+              <Plus className="w-5 h-5 mr-2" />Neue Vorlage
             </Button>
             <Button onClick={signOut} variant="outline" size="lg">
-              <LogOut className="w-5 h-5 mr-2" />
-              Abmelden
+              <LogOut className="w-5 h-5 mr-2" />Abmelden
             </Button>
           </div>
         </div>
@@ -566,35 +504,27 @@ const Dashboard = () => {
               <FileText className="w-4 h-4" />
               Vorlagen
               {drafts.length > 0 && (
-                <span className="ml-1 bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">
-                  {drafts.length}
-                </span>
+                <span className="ml-1 bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">{drafts.length}</span>
               )}
             </TabsTrigger>
             <TabsTrigger value="published" className="gap-2 px-6">
               <Rocket className="w-4 h-4" />
               Produktiv
               {published.length > 0 && (
-                <span className="ml-1 bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">
-                  {published.length}
-                </span>
+                <span className="ml-1 bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">{published.length}</span>
               )}
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="drafts">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {drafts.length === 0
-                ? <EmptyState mode="draft" />
-                : drafts.map((s) => <SurveyCardDraft key={s.id} survey={s} />)}
+              {drafts.length === 0 ? <EmptyState mode="draft" /> : drafts.map((s) => <SurveyCardDraft key={s.id} survey={s} />)}
             </div>
           </TabsContent>
 
           <TabsContent value="published">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {published.length === 0
-                ? <EmptyState mode="published" />
-                : published.map((s) => <SurveyCardPublished key={s.id} survey={s} />)}
+              {published.length === 0 ? <EmptyState mode="published" /> : published.map((s) => <SurveyCardPublished key={s.id} survey={s} />)}
             </div>
           </TabsContent>
         </Tabs>
@@ -605,14 +535,11 @@ const Dashboard = () => {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
-              <Rocket className="w-5 h-5 text-blue-600" />
-              Umfrage produktiv schalten?
+              <Rocket className="w-5 h-5 text-blue-600" />Umfrage produktiv schalten?
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-2 text-sm text-gray-700">
-                <p>
-                  Von der Vorlage <strong>„{publishSurvey?.title}"</strong> wird eine Kopie erstellt und sofort für Teilnehmer freigegeben.
-                </p>
+                <p>Von der Vorlage <strong>„{publishSurvey?.title}"</strong> wird eine Kopie erstellt und sofort für Teilnehmer freigegeben.</p>
                 <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-blue-800">
                   ✅ Die Vorlage bleibt unverändert erhalten und kann weiterhin bearbeitet werden.
                 </div>
@@ -622,64 +549,49 @@ const Dashboard = () => {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={publishing}>Abbrechen</AlertDialogCancel>
             <AlertDialogAction onClick={handlePublish} disabled={publishing} className="bg-blue-600 hover:bg-blue-700">
-              <Rocket className="w-4 h-4 mr-2" />
-              {publishing ? 'Wird veröffentlicht…' : 'Produktiv schalten'}
+              <Rocket className="w-4 h-4 mr-2" />{publishing ? 'Wird veröffentlicht…' : 'Produktiv schalten'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       {/* Delete confirmation – Draft */}
-      <AlertDialog
-        open={!!deleteTarget && deleteTarget.status === 'draft'}
-        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
-      >
+      <AlertDialog open={!!deleteTarget && deleteTarget.status === 'draft'} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
-              <Trash2 className="w-5 h-5 text-red-500" />
-              Vorlage löschen?
+              <Trash2 className="w-5 h-5 text-red-500" />Vorlage löschen?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Die Vorlage <strong>„{deleteTarget?.title}"</strong> wird unwiderruflich gelöscht.
-              Alle Fragen und Antwortoptionen werden ebenfalls entfernt.
+              Die Vorlage <strong>„{deleteTarget?.title}"</strong> wird unwiderruflich gelöscht. Alle Fragen und Antwortoptionen werden ebenfalls entfernt.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Abbrechen</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">
-              <Trash2 className="w-4 h-4 mr-2" />
-              Endgültig löschen
+              <Trash2 className="w-4 h-4 mr-2" />Endgültig löschen
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       {/* Delete confirmation – Published */}
-      <AlertDialog
-        open={!!deleteTarget && deleteTarget.status === 'published'}
-        onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteResponseCount(null); } }}
-      >
+      <AlertDialog open={!!deleteTarget && deleteTarget.status === 'published'} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteResponseCount(null); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2 text-red-700">
-              <Trash2 className="w-5 h-5" />
-              Produktive Umfrage löschen?
+              <Trash2 className="w-5 h-5" />Produktive Umfrage löschen?
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3 text-sm text-gray-700">
-                <p>
-                  Sie sind dabei, die produktive Umfrage{' '}
-                  <strong>„{deleteTarget?.title}"</strong> dauerhaft zu löschen.
-                </p>
+                <p>Sie sind dabei, die produktive Umfrage <strong>„{deleteTarget?.title}"</strong> dauerhaft zu löschen.</p>
                 <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 space-y-1">
                   <p className="font-semibold text-red-800">Folgende Daten werden unwiderruflich gelöscht:</p>
                   <ul className="list-disc list-inside text-red-700 space-y-0.5">
                     <li>Die Umfrage und alle Fragen</li>
                     <li>Alle Antwortoptionen</li>
                     <li>
-                      {loadingResponseCount
-                        ? 'Antworten werden gezählt…'
+                      {loadingResponseCount ? 'Antworten werden gezählt…'
                         : deleteResponseCount !== null
                           ? <>Alle Antworten von <strong>{deleteResponseCount} {deleteResponseCount === 1 ? 'Teilnehmer' : 'Teilnehmern'}</strong></>
                           : 'Alle gesammelten Antworten'}
@@ -692,13 +604,8 @@ const Dashboard = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Abbrechen</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={loadingResponseCount}
-              className="bg-red-600 hover:bg-red-700"
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              Ja, alles löschen
+            <AlertDialogAction onClick={handleDelete} disabled={loadingResponseCount} className="bg-red-600 hover:bg-red-700">
+              <Trash2 className="w-4 h-4 mr-2" />Ja, alles löschen
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -709,24 +616,14 @@ const Dashboard = () => {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Als neue Vorlage duplizieren</DialogTitle>
-            <DialogDescription>
-              Fragen und Antwortoptionen werden kopiert. Antworten werden nicht übernommen. Die Kopie startet als Vorlage.
-            </DialogDescription>
+            <DialogDescription>Fragen und Antwortoptionen werden kopiert. Antworten werden nicht übernommen.</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
             <Label htmlFor="dup-title">Name der neuen Vorlage</Label>
-            <Input
-              id="dup-title"
-              value={duplicateTitle}
-              onChange={(e) => setDuplicateTitle(e.target.value)}
-              placeholder="z.B. Mitarbeiterumfrage (Kopie)"
-              autoFocus
-            />
+            <Input id="dup-title" value={duplicateTitle} onChange={(e) => setDuplicateTitle(e.target.value)} placeholder="z.B. Mitarbeiterumfrage (Kopie)" autoFocus />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setDuplicateSurvey(null); setDuplicateTitle(''); }} disabled={duplicating}>
-              Abbrechen
-            </Button>
+            <Button variant="outline" onClick={() => { setDuplicateSurvey(null); setDuplicateTitle(''); }} disabled={duplicating}>Abbrechen</Button>
             <Button onClick={handleDuplicate} disabled={duplicating} className="bg-blue-600 hover:bg-blue-700">
               {duplicating ? 'Dupliziere…' : 'Duplizieren'}
             </Button>
@@ -746,26 +643,13 @@ const Dashboard = () => {
               {shareUrl && <QRCodeSVG value={shareUrl} size={220} />}
             </div>
             <div className="flex gap-2 w-full">
-              <input
-                type="text"
-                value={shareUrl ?? ''}
-                readOnly
-                className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50"
-              />
-              <Button
-                size="icon"
-                onClick={() => { navigator.clipboard.writeText(shareUrl ?? ''); toast.success('Link kopiert!'); }}
-              >
+              <input type="text" value={shareUrl ?? ''} readOnly className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50" />
+              <Button size="icon" onClick={() => { navigator.clipboard.writeText(shareUrl ?? ''); toast.success('Link kopiert!'); }}>
                 <Share2 className="w-4 h-4" />
               </Button>
             </div>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => downloadQrCode('dashboard-qr-container', shareSurveyTitle)}
-            >
-              <Download className="w-4 h-4 mr-2" />
-              QR-Code als PNG herunterladen
+            <Button variant="outline" className="w-full" onClick={() => downloadQrCode('dashboard-qr-container', shareSurveyTitle)}>
+              <Download className="w-4 h-4 mr-2" />QR-Code als PNG herunterladen
             </Button>
           </div>
         </DialogContent>
