@@ -66,8 +66,6 @@ const CreateSurvey = () => {
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [maxVotes, setMaxVotes] = useState('');
-  const [expiresAtLocal, setExpiresAtLocal] = useState('');
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(isEditMode);
@@ -103,11 +101,6 @@ const CreateSurvey = () => {
 
       setTitle(surveyData.title);
       setDescription(surveyData.description || '');
-      if (surveyData.max_votes) setMaxVotes(String(surveyData.max_votes));
-      if (surveyData.expires_at) {
-        const d = new Date(surveyData.expires_at);
-        setExpiresAtLocal(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
-      }
       
       // Load visibility settings
       setVisibility(surveyData.visibility || 'private');
@@ -255,14 +248,6 @@ const CreateSurvey = () => {
 
   const validate = (): boolean => {
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
-    if (!expiresAtLocal.trim()) { toast.error('Bitte geben Sie ein Ablaufdatum an'); return false; }
-    const expiresAtDate = new Date(expiresAtLocal);
-    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Ungültiges Ablaufdatum'); return false; }
-    if (expiresAtDate.getTime() <= Date.now()) { toast.error('Das Ablaufdatum muss in der Zukunft liegen'); return false; }
-    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
-    if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
-      toast.error('Das Stimmen-Limit muss ≥ 1 sein'); return false;
-    }
     if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
     const categoryCount = questions.filter((q) => q.is_category).length;
     if (categoryCount > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
@@ -284,11 +269,9 @@ const CreateSurvey = () => {
   const handleSave = async () => {
     if (!validate()) return;
     setSaving(true);
-    const expiresAt = new Date(expiresAtLocal).toISOString();
-    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
     try {
-      if (isEditMode && editId) await updateSurvey(editId, expiresAt, parsedMaxVotes);
-      else await createSurvey(expiresAt, parsedMaxVotes);
+      if (isEditMode && editId) await updateSurvey(editId);
+      else await createSurvey();
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (error) {
@@ -298,7 +281,7 @@ const CreateSurvey = () => {
     } finally { setSaving(false); }
   };
 
-  const createSurvey = async (expiresAt: string, parsedMaxVotes: number | null) => {
+  const createSurvey = async () => {
     const { data: survey, error } = await supabase
       .from('surveys')
       .insert({
@@ -307,8 +290,6 @@ const CreateSurvey = () => {
         created_by: user?.id,
         status: 'draft',
         is_active: false,
-        max_votes: parsedMaxVotes,
-        expires_at: expiresAt,
         visibility,
         allow_copy: allowCopy,
         allow_edit: allowEdit
@@ -318,14 +299,12 @@ const CreateSurvey = () => {
     await saveQuestions(survey.id, questions);
   };
 
-  const updateSurvey = async (surveyId: string, expiresAt: string, parsedMaxVotes: number | null) => {
+  const updateSurvey = async (surveyId: string) => {
     console.log('[CreateSurvey] Updating survey:', surveyId);
     const { error } = await supabase.from('surveys')
       .update({
         title,
         description,
-        max_votes: parsedMaxVotes,
-        expires_at: expiresAt,
         updated_at: new Date().toISOString(),
         visibility,
         allow_copy: allowCopy,
@@ -437,16 +416,6 @@ const CreateSurvey = () => {
             <div>
               <Label htmlFor="description">Beschreibung</Label>
               <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optionale Beschreibung" rows={3} />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="maxVotes">Stimmen-Limit (optional)</Label>
-                <Input id="maxVotes" type="number" min={1} value={maxVotes} onChange={(e) => setMaxVotes(e.target.value)} placeholder="z.B. 100" />
-              </div>
-              <div>
-                <Label htmlFor="expiresAt">Ablaufdatum *</Label>
-                <Input id="expiresAt" type="datetime-local" value={expiresAtLocal} onChange={(e) => setExpiresAtLocal(e.target.value)} />
-              </div>
             </div>
           </CardContent>
         </Card>

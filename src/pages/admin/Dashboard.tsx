@@ -60,6 +60,8 @@ const Dashboard = () => {
   const [loadingResponseCount, setLoadingResponseCount] = useState(false);
   const [publishSurvey, setPublishSurvey] = useState<Survey | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [publishExpiresAt, setPublishExpiresAt] = useState('');
+  const [publishMaxVotes, setPublishMaxVotes] = useState('');
   const [duplicateSurvey, setDuplicateSurvey] = useState<Survey | null>(null);
   const [duplicateTitle, setDuplicateTitle] = useState('');
   const [duplicating, setDuplicating] = useState(false);
@@ -185,6 +187,27 @@ const Dashboard = () => {
 
   const handlePublish = async () => {
     if (!publishSurvey || !user?.id) return;
+    
+    // Validate
+    if (!publishExpiresAt.trim()) {
+      toast.error('Bitte geben Sie ein Ablaufdatum an');
+      return;
+    }
+    const expiresAtDate = new Date(publishExpiresAt);
+    if (Number.isNaN(expiresAtDate.getTime())) {
+      toast.error('Ungültiges Ablaufdatum');
+      return;
+    }
+    if (expiresAtDate.getTime() <= Date.now()) {
+      toast.error('Das Ablaufdatum muss in der Zukunft liegen');
+      return;
+    }
+    const parsedMaxVotes = publishMaxVotes.trim() ? Number.parseInt(publishMaxVotes, 10) : null;
+    if (publishMaxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
+      toast.error('Das Stimmen-Limit muss ≥ 1 sein');
+      return;
+    }
+    
     setPublishing(true);
     try {
       const now = new Date().toISOString();
@@ -198,8 +221,8 @@ const Dashboard = () => {
           is_active: true,
           status: 'published',
           published_at: now,
-          max_votes: publishSurvey.max_votes ?? null,
-          expires_at: publishSurvey.expires_at ?? null,
+          max_votes: parsedMaxVotes,
+          expires_at: expiresAtDate.toISOString(),
           visibility: 'private', // Published surveys are not templates
           allow_copy: true,
           allow_edit: false,
@@ -248,7 +271,12 @@ const Dashboard = () => {
       toast.success('Umfrage ist jetzt produktiv! Die Vorlage bleibt erhalten.');
       loadSurveys();
     } catch (e) { console.error(e); toast.error('Fehler beim Produktivschalten'); }
-    finally { setPublishing(false); setPublishSurvey(null); }
+    finally {
+      setPublishing(false);
+      setPublishSurvey(null);
+      setPublishExpiresAt('');
+      setPublishMaxVotes('');
+    }
   };
 
   const handleDuplicate = async () => {
@@ -625,17 +653,45 @@ const Dashboard = () => {
       </div>
 
       {/* Publish confirmation */}
-      <AlertDialog open={!!publishSurvey} onOpenChange={() => { if (!publishing) setPublishSurvey(null); }}>
-        <AlertDialogContent>
+      <AlertDialog open={!!publishSurvey} onOpenChange={() => { if (!publishing) { setPublishSurvey(null); setPublishExpiresAt(''); setPublishMaxVotes(''); } }}>
+        <AlertDialogContent className="max-w-lg">
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <Rocket className="w-5 h-5 text-blue-600" />Umfrage produktiv schalten?
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
-              <div className="space-y-2 text-sm text-gray-700">
+              <div className="space-y-4 text-sm text-gray-700">
                 <p>Von der Vorlage <strong>„{publishSurvey?.title}"</strong> wird eine Kopie erstellt und sofort für Teilnehmer freigegeben.</p>
                 <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-blue-800">
                   ✅ Die Vorlage bleibt unverändert erhalten und kann weiterhin bearbeitet werden.
+                </div>
+                
+                {/* Settings for published survey */}
+                <div className="space-y-3 pt-2">
+                  <div>
+                    <Label htmlFor="publishExpiresAt" className="text-gray-900">Ablaufdatum *</Label>
+                    <Input
+                      id="publishExpiresAt"
+                      type="datetime-local"
+                      value={publishExpiresAt}
+                      onChange={(e) => setPublishExpiresAt(e.target.value)}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Nach diesem Datum können keine neuen Antworten mehr abgegeben werden</p>
+                  </div>
+                  <div>
+                    <Label htmlFor="publishMaxVotes" className="text-gray-900">Stimmen-Limit (optional)</Label>
+                    <Input
+                      id="publishMaxVotes"
+                      type="number"
+                      min={1}
+                      value={publishMaxVotes}
+                      onChange={(e) => setPublishMaxVotes(e.target.value)}
+                      placeholder="z.B. 100"
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Maximale Anzahl an Teilnehmern (leer = unbegrenzt)</p>
+                  </div>
                 </div>
               </div>
             </AlertDialogDescription>
