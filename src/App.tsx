@@ -12,6 +12,7 @@ import CreateSurvey from "./pages/admin/CreateSurvey";
 import Results from "./pages/admin/Results";
 import UserManagement from "./pages/admin/UserManagement";
 import SurveyPage from "./pages/Survey";
+import SurveyPreview from "./pages/admin/SurveyPreview";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -56,6 +57,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <Results />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/preview/:id"
+              element={
+                <ProtectedRoute>
+                  <SurveyPreview />
                 </ProtectedRoute>
               }
             />

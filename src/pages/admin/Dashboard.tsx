@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy,
-  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck, CalendarClock, CalendarX2,
+  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck, CalendarClock, CalendarX2, ScanEye,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -422,6 +422,13 @@ const Dashboard = () => {
             >
               <Eye className="w-4 h-4 mr-2" />
               Auswertung
+            </Button>
+            <Button
+              onClick={() => navigate(`/admin/preview/${survey.id}`)}
+              variant="outline" size="icon" title="Vorschau"
+              className="border-blue-300 hover:bg-blue-50 text-blue-600"
+            >
+              <ScanEye className="w-4 h-4" />
             </Button>
             <Button
               onClick={() => setShareUrl(url)}
