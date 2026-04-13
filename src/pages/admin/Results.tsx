@@ -5,7 +5,7 @@ import { Survey, Question, Option, Response } from '@/integrations/supabase/type
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, QrCode, Share2, Lock } from 'lucide-react';
+import { ArrowLeft, QrCode, Share2, Lock, MessageSquare } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
@@ -20,6 +20,16 @@ const META_PREFIX = '__dyad_meta__:';
 
 function isMetaOption(optionText: string) {
   return optionText.startsWith(META_PREFIX);
+}
+function isCommentMetaOption(optionText: string): boolean {
+  if (!isMetaOption(optionText)) return false;
+  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'comment'; }
+  catch { return false; }
+}
+function isTextMetaOption(optionText: string): boolean {
+  if (!isMetaOption(optionText)) return false;
+  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'text'; }
+  catch { return false; }
 }
 
 const Results = () => {
@@ -68,18 +78,27 @@ const Results = () => {
 
   const getChartData = (questionId: string) => {
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
-    const questionResponses = responses.filter((r) => r.question_id === questionId);
+    const questionResponses = responses.filter((r) => r.question_id === questionId && r.option_id);
     return questionOptions.map((option) => ({
       name: option.option_text,
       value: questionResponses.filter((r) => r.option_id === option.id).length,
     }));
   };
 
-  const isTextQuestion = (questionId: string) =>
-    (options[questionId] || []).some((o) => isMetaOption(o.option_text));
+  const isTextOnlyQuestion = (questionId: string) =>
+    (options[questionId] || []).some((o) => isTextMetaOption(o.option_text));
+
+  const hasComments = (questionId: string) =>
+    (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
+
+  const getComments = (questionId: string): string[] =>
+    responses
+      .filter((r) => r.question_id === questionId && r.text_response && !r.option_id)
+      .map((r) => r.text_response as string)
+      .filter(Boolean);
 
   const getWordCloud = (questionId: string) => {
-    const questionResponses = responses.filter((r) => r.question_id === questionId);
+    const questionResponses = responses.filter((r) => r.question_id === questionId && r.option_id);
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
     const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
     const counts = new Map<string, number>();
@@ -93,19 +112,11 @@ const Results = () => {
       .sort((a, b) => b.count - a.count);
   };
 
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(surveyUrl);
-    toast.success('Link kopiert!');
-  };
+  const copyToClipboard = () => { navigator.clipboard.writeText(surveyUrl); toast.success('Link kopiert!'); };
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
-      </div>
-    );
+    return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" /></div>;
   }
-
   if (!survey) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -120,6 +131,32 @@ const Results = () => {
   const totalResponses = new Set(responses.map((r) => r.participant_id)).size;
   const isPublished = survey.status === 'published';
 
+  // Kommentar-Sektion (wiederverwendbar)
+  const CommentsSection = ({ questionId }: { questionId: string }) => {
+    const commentList = getComments(questionId);
+    if (!hasComments(questionId)) return null;
+    return (
+      <div className="mt-6 pt-5 border-t border-gray-100">
+        <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3">
+          <MessageSquare className="w-4 h-4 text-blue-500" />
+          Persönliche Kommentare
+          <span className="ml-1 bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">{commentList.length}</span>
+        </h4>
+        {commentList.length === 0 ? (
+          <p className="text-sm text-gray-400 italic">Noch keine Kommentare.</p>
+        ) : (
+          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+            {commentList.map((c, i) => (
+              <div key={i} className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-sm text-gray-800 leading-relaxed">
+                {c}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
       <div className="container mx-auto px-4 max-w-7xl">
@@ -132,9 +169,7 @@ const Results = () => {
           <div className="flex-1">
             <div className="flex items-center gap-3 mb-1">
               <h1 className="text-3xl font-bold text-gray-900">{survey.title}</h1>
-              <Badge className={isPublished
-                ? 'bg-green-100 text-green-700 border-green-300'
-                : 'bg-amber-100 text-amber-700 border-amber-300'}>
+              <Badge className={isPublished ? 'bg-green-100 text-green-700 border-green-300' : 'bg-amber-100 text-amber-700 border-amber-300'}>
                 {isPublished ? 'Produktiv' : 'Vorlage'}
               </Badge>
             </div>
@@ -145,8 +180,7 @@ const Results = () => {
             <Dialog>
               <DialogTrigger asChild>
                 <Button className="bg-blue-600 hover:bg-blue-700">
-                  <QrCode className="w-5 h-5 mr-2" />
-                  QR-Code / Teilen
+                  <QrCode className="w-5 h-5 mr-2" />QR-Code / Teilen
                 </Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-md">
@@ -155,19 +189,10 @@ const Results = () => {
                   <DialogDescription>Scannen Sie den QR-Code oder kopieren Sie den Link.</DialogDescription>
                 </DialogHeader>
                 <div className="flex flex-col items-center gap-4 py-4">
-                  <div className="bg-white p-4 rounded-xl border-2">
-                    <QRCodeSVG value={surveyUrl} size={220} />
-                  </div>
+                  <div className="bg-white p-4 rounded-xl border-2"><QRCodeSVG value={surveyUrl} size={220} /></div>
                   <div className="flex gap-2 w-full">
-                    <input
-                      type="text"
-                      value={surveyUrl}
-                      readOnly
-                      className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50"
-                    />
-                    <Button onClick={copyToClipboard} size="icon">
-                      <Share2 className="w-4 h-4" />
-                    </Button>
+                    <input type="text" value={surveyUrl} readOnly className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50" />
+                    <Button onClick={copyToClipboard} size="icon"><Share2 className="w-4 h-4" /></Button>
                   </div>
                 </div>
               </DialogContent>
@@ -180,7 +205,6 @@ const Results = () => {
           )}
         </div>
 
-        {/* No responses yet */}
         {totalResponses === 0 && (
           <Card className="mb-6 border-blue-200 bg-blue-50">
             <CardContent className="pt-4 pb-4 text-sm text-blue-800">
@@ -192,7 +216,7 @@ const Results = () => {
         {/* Charts */}
         <div className="space-y-6">
           {questions.map((question) => {
-            if (isTextQuestion(question.id)) {
+            if (isTextOnlyQuestion(question.id)) {
               const cloud = getWordCloud(question.id);
               const max = Math.max(1, ...cloud.map((c) => c.count));
               return (
@@ -206,18 +230,14 @@ const Results = () => {
                         {cloud.map((item) => {
                           const size = 12 + Math.round((item.count / max) * 22);
                           return (
-                            <span
-                              key={item.text}
-                              className="px-3 py-1 rounded-full bg-white border text-gray-900"
-                              style={{ fontSize: `${size}px` }}
-                              title={`${item.count}×`}
-                            >
+                            <span key={item.text} className="px-3 py-1 rounded-full bg-white border text-gray-900" style={{ fontSize: `${size}px` }} title={`${item.count}×`}>
                               {item.text}
                             </span>
                           );
                         })}
                       </div>
                     )}
+                    <CommentsSection questionId={question.id} />
                   </CardContent>
                 </Card>
               );
@@ -241,8 +261,7 @@ const Results = () => {
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="name" />
                           <YAxis allowDecimals={false} />
-                          <Tooltip />
-                          <Legend />
+                          <Tooltip /><Legend />
                           <Bar dataKey="value" fill="#3b82f6" name="Antworten" />
                         </BarChart>
                       </ResponsiveContainer>
@@ -254,8 +273,7 @@ const Results = () => {
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="name" />
                           <YAxis allowDecimals={false} />
-                          <Tooltip />
-                          <Legend />
+                          <Tooltip /><Legend />
                           <Line type="monotone" dataKey="value" stroke="#3b82f6" name="Antworten" strokeWidth={2} />
                         </LineChart>
                       </ResponsiveContainer>
@@ -264,14 +282,9 @@ const Results = () => {
                     <TabsContent value="pie" className="mt-6">
                       <ResponsiveContainer width="100%" height={300}>
                         <PieChart>
-                          <Pie
-                            data={chartData}
-                            cx="50%" cy="50%"
-                            labelLine={false}
+                          <Pie data={chartData} cx="50%" cy="50%" labelLine={false}
                             label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                            outerRadius={100}
-                            dataKey="value"
-                          >
+                            outerRadius={100} dataKey="value">
                             {chartData.map((_, index) => (
                               <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                             ))}
@@ -281,6 +294,7 @@ const Results = () => {
                       </ResponsiveContainer>
                     </TabsContent>
                   </Tabs>
+                  <CommentsSection questionId={question.id} />
                 </CardContent>
               </Card>
             );

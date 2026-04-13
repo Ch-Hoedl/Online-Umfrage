@@ -7,8 +7,9 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { encodeDescriptionWithMeta, decodeDescriptionWithMeta } from '@/utils/surveyMeta';
@@ -17,6 +18,9 @@ const META_PREFIX = '__dyad_meta__:';
 
 function buildTextMetaOption(maxAnswers: number) {
   return `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
+}
+function buildCommentMetaOption() {
+  return `${META_PREFIX}${JSON.stringify({ kind: 'comment' })}`;
 }
 
 function isMetaOption(text: string) {
@@ -28,20 +32,27 @@ function parseTextMaxAnswers(optionText: string): number | null {
   try {
     const raw = optionText.slice(META_PREFIX.length);
     const parsed = JSON.parse(raw);
-    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') {
-      return parsed.maxAnswers;
-    }
+    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') return parsed.maxAnswers;
   } catch { /* ignore */ }
   return null;
 }
 
+function isCommentMetaOption(optionText: string): boolean {
+  if (!isMetaOption(optionText)) return false;
+  try {
+    const raw = optionText.slice(META_PREFIX.length);
+    return JSON.parse(raw)?.kind === 'comment';
+  } catch { return false; }
+}
+
 interface QuestionData {
   id: string;
-  dbId?: string; // existing DB id when editing
+  dbId?: string;
   question_text: string;
   question_type: Question['question_type'];
   options: { id: string; dbId?: string; text: string }[];
   text_max_answers: number;
+  allow_comment: boolean;
 }
 
 const CreateSurvey = () => {
@@ -57,7 +68,6 @@ const CreateSurvey = () => {
   const [loadingData, setLoadingData] = useState(isEditMode);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
 
-  // Drag & Drop state
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const draggedIndex = useRef<number>(-1);
@@ -65,82 +75,44 @@ const CreateSurvey = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  useEffect(() => {
-    loadUserProfile();
-  }, []);
-
-  useEffect(() => {
-    if (isEditMode && editId) {
-      loadExistingSurvey(editId);
-    }
-  }, [editId]);
+  useEffect(() => { loadUserProfile(); }, []);
+  useEffect(() => { if (isEditMode && editId) loadExistingSurvey(editId); }, [editId]);
 
   const loadUserProfile = async () => {
     if (!user) return;
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single();
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       if (error) throw error;
       setUserProfile(data);
-      if (data.role === 'user') {
-        toast.error('Sie haben keine Berechtigung, Umfragen zu erstellen');
-        navigate('/admin');
-      }
-    } catch {
-      toast.error('Fehler beim Laden des Benutzerprofils');
-      navigate('/admin');
-    }
+      if (data.role === 'user') { toast.error('Keine Berechtigung'); navigate('/admin'); }
+    } catch { toast.error('Fehler beim Laden des Benutzerprofils'); navigate('/admin'); }
   };
 
   const loadExistingSurvey = async (surveyId: string) => {
     setLoadingData(true);
     try {
-      // Load survey
-      const { data: surveyData, error: surveyError } = await supabase
-        .from('surveys')
-        .select('*')
-        .eq('id', surveyId)
-        .single();
+      const { data: surveyData, error: surveyError } = await supabase.from('surveys').select('*').eq('id', surveyId).single();
       if (surveyError) throw surveyError;
 
       const decoded = decodeDescriptionWithMeta(surveyData.description);
       setTitle(surveyData.title);
       setDescription(decoded.description || '');
-
-      if (decoded.meta.max_votes) {
-        setMaxVotes(String(decoded.meta.max_votes));
-      }
+      if (decoded.meta.max_votes) setMaxVotes(String(decoded.meta.max_votes));
       if (decoded.meta.expires_at) {
-        // Convert ISO string to datetime-local format
         const d = new Date(decoded.meta.expires_at);
-        const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-          .toISOString()
-          .slice(0, 16);
-        setExpiresAtLocal(local);
+        setExpiresAtLocal(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
       }
 
-      // Load questions
       const { data: questionsData, error: questionsError } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('survey_id', surveyId)
-        .order('order_index');
+        .from('questions').select('*').eq('survey_id', surveyId).order('order_index');
       if (questionsError) throw questionsError;
 
       const loadedQuestions = questionsData || [];
-
-      // Load options for all questions
       const questionIds = loadedQuestions.map((q) => q.id);
       let optionsData: any[] = [];
       if (questionIds.length > 0) {
         const { data: opts, error: optsError } = await supabase
-          .from('options')
-          .select('*')
-          .in('question_id', questionIds)
-          .order('order_index');
+          .from('options').select('*').in('question_id', questionIds).order('order_index');
         if (optsError) throw optsError;
         optionsData = opts || [];
       }
@@ -154,24 +126,18 @@ const CreateSurvey = () => {
       const mappedQuestions: QuestionData[] = loadedQuestions.map((q) => {
         const qOptions = optionsByQuestion[q.id] || [];
         const metaOpt = qOptions.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
+        const hasComment = qOptions.some((o: any) => isCommentMetaOption(o.option_text));
         const isTextQ = !!metaOpt;
         const visibleOptions = qOptions.filter((o: any) => !isMetaOption(o.option_text));
-
-        // Determine display type
-        let displayType: Question['question_type'] = q.question_type;
-        if (isTextQ) displayType = 'text';
 
         return {
           id: crypto.randomUUID(),
           dbId: q.id,
           question_text: q.question_text,
-          question_type: displayType,
+          question_type: isTextQ ? 'text' : q.question_type,
           text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : 3,
-          options: visibleOptions.map((o: any) => ({
-            id: crypto.randomUUID(),
-            dbId: o.id,
-            text: o.option_text,
-          })),
+          allow_comment: hasComment,
+          options: visibleOptions.map((o: any) => ({ id: crypto.randomUUID(), dbId: o.id, text: o.option_text })),
         };
       });
 
@@ -188,24 +154,17 @@ const CreateSurvey = () => {
   // ── Question helpers ──────────────────────────────────────────────────────
 
   const addQuestion = () => {
-    setQuestions([
-      ...questions,
-      {
-        id: crypto.randomUUID(),
-        question_text: '',
-        question_type: 'single',
-        text_max_answers: 3,
-        options: [
-          { id: crypto.randomUUID(), text: '' },
-          { id: crypto.randomUUID(), text: '' },
-        ],
-      },
-    ]);
+    setQuestions([...questions, {
+      id: crypto.randomUUID(),
+      question_text: '',
+      question_type: 'single',
+      text_max_answers: 3,
+      allow_comment: false,
+      options: [{ id: crypto.randomUUID(), text: '' }, { id: crypto.randomUUID(), text: '' }],
+    }]);
   };
 
-  const removeQuestion = (questionId: string) => {
-    setQuestions(questions.filter((q) => q.id !== questionId));
-  };
+  const removeQuestion = (questionId: string) => setQuestions(questions.filter((q) => q.id !== questionId));
 
   const moveQuestion = (fromIndex: number, toIndex: number) => {
     if (toIndex < 0 || toIndex >= questions.length) return;
@@ -216,47 +175,25 @@ const CreateSurvey = () => {
   };
 
   const updateQuestion = (questionId: string, field: string, value: any) => {
-    setQuestions(
-      questions.map((q) => {
-        if (q.id !== questionId) return q;
-        const next = { ...q, [field]: value } as QuestionData;
-        if (field === 'question_type' && value === 'text' && !next.text_max_answers) {
-          next.text_max_answers = 3;
-        }
-        return next;
-      })
-    );
+    setQuestions(questions.map((q) => {
+      if (q.id !== questionId) return q;
+      const next = { ...q, [field]: value } as QuestionData;
+      if (field === 'question_type' && value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
+      return next;
+    }));
   };
 
-  const addOption = (questionId: string) => {
-    setQuestions(
-      questions.map((q) =>
-        q.id === questionId
-          ? { ...q, options: [...q.options, { id: crypto.randomUUID(), text: '' }] }
-          : q
-      )
-    );
-  };
+  const addOption = (questionId: string) => setQuestions(questions.map((q) =>
+    q.id === questionId ? { ...q, options: [...q.options, { id: crypto.randomUUID(), text: '' }] } : q
+  ));
 
-  const removeOption = (questionId: string, optionId: string) => {
-    setQuestions(
-      questions.map((q) =>
-        q.id === questionId
-          ? { ...q, options: q.options.filter((o) => o.id !== optionId) }
-          : q
-      )
-    );
-  };
+  const removeOption = (questionId: string, optionId: string) => setQuestions(questions.map((q) =>
+    q.id === questionId ? { ...q, options: q.options.filter((o) => o.id !== optionId) } : q
+  ));
 
-  const updateOption = (questionId: string, optionId: string, text: string) => {
-    setQuestions(
-      questions.map((q) =>
-        q.id === questionId
-          ? { ...q, options: q.options.map((o) => (o.id === optionId ? { ...o, text } : o)) }
-          : q
-      )
-    );
-  };
+  const updateOption = (questionId: string, optionId: string, text: string) => setQuestions(questions.map((q) =>
+    q.id === questionId ? { ...q, options: q.options.map((o) => (o.id === optionId ? { ...o, text } : o)) } : q
+  ));
 
   // ── Drag & Drop ───────────────────────────────────────────────────────────
 
@@ -280,11 +217,7 @@ const CreateSurvey = () => {
 
   const handleDrop = (e: React.DragEvent, targetId: string) => {
     e.preventDefault();
-    if (!draggedId || draggedId === targetId) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
+    if (!draggedId || draggedId === targetId) { setDraggedId(null); setDragOverId(null); return; }
     const fromIndex = draggedIndex.current;
     const toIndex = questions.findIndex((q) => q.id === targetId);
     if (fromIndex !== -1 && toIndex !== -1) moveQuestion(fromIndex, toIndex);
@@ -292,10 +225,7 @@ const CreateSurvey = () => {
     setDragOverId(null);
   };
 
-  const handleDragEnd = () => {
-    setDraggedId(null);
-    setDragOverId(null);
-  };
+  const handleDragEnd = () => { setDraggedId(null); setDragOverId(null); };
 
   // ── Validation ────────────────────────────────────────────────────────────
 
@@ -303,20 +233,18 @@ const CreateSurvey = () => {
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
     if (!expiresAtLocal.trim()) { toast.error('Bitte geben Sie ein Ablaufdatum an'); return false; }
     const expiresAtDate = new Date(expiresAtLocal);
-    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Bitte geben Sie ein gültiges Ablaufdatum an'); return false; }
+    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Ungültiges Ablaufdatum'); return false; }
     if (expiresAtDate.getTime() <= Date.now()) { toast.error('Das Ablaufdatum muss in der Zukunft liegen'); return false; }
     const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
     if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
-      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein'); return false;
+      toast.error('Das Stimmen-Limit muss ≥ 1 sein'); return false;
     }
     if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
     for (const q of questions) {
       if (!q.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return false; }
       if (q.question_type === 'text') {
         const m = Number(q.text_max_answers);
-        if (!Number.isFinite(m) || m < 1 || m > 10) {
-          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen'); return false;
-        }
+        if (!Number.isFinite(m) || m < 1 || m > 10) { toast.error('Max. Antworten muss zwischen 1 und 10 liegen'); return false; }
       }
       if (q.question_type !== 'rating' && q.question_type !== 'text' && q.options.some((o) => !o.text.trim())) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false;
@@ -325,61 +253,41 @@ const CreateSurvey = () => {
     return true;
   };
 
-  // ── Save (create or update) ───────────────────────────────────────────────
+  // ── Save ──────────────────────────────────────────────────────────────────
 
   const handleSave = async () => {
     if (!validate()) return;
     setSaving(true);
-
     const expiresAt = new Date(expiresAtLocal).toISOString();
     const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
-    const descriptionWithMeta = encodeDescriptionWithMeta(description, {
-      max_votes: parsedMaxVotes,
-      expires_at: expiresAt,
-    });
-
+    const descriptionWithMeta = encodeDescriptionWithMeta(description, { max_votes: parsedMaxVotes, expires_at: expiresAt });
     try {
-      if (isEditMode && editId) {
-        await updateSurvey(editId, descriptionWithMeta);
-      } else {
-        await createSurvey(descriptionWithMeta);
-      }
-      toast.success(isEditMode ? 'Umfrage erfolgreich aktualisiert' : 'Umfrage erfolgreich erstellt');
+      if (isEditMode && editId) await updateSurvey(editId, descriptionWithMeta);
+      else await createSurvey(descriptionWithMeta);
+      toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (error) {
       console.error(error);
-      toast.error(isEditMode ? 'Fehler beim Aktualisieren der Umfrage' : 'Fehler beim Erstellen der Umfrage');
-    } finally {
-      setSaving(false);
-    }
+      toast.error(isEditMode ? 'Fehler beim Aktualisieren' : 'Fehler beim Erstellen');
+    } finally { setSaving(false); }
   };
 
   const createSurvey = async (descriptionWithMeta: string) => {
-    const { data: survey, error: surveyError } = await supabase
+    const { data: survey, error } = await supabase
       .from('surveys')
       .insert({ title, description: descriptionWithMeta, created_by: user?.id, status: 'draft', is_active: false })
-      .select()
-      .single();
-    if (surveyError) throw surveyError;
+      .select().single();
+    if (error) throw error;
     await saveQuestions(survey.id, questions);
   };
 
   const updateSurvey = async (surveyId: string, descriptionWithMeta: string) => {
-    // Update survey metadata
-    const { error: surveyError } = await supabase
-      .from('surveys')
+    const { error } = await supabase.from('surveys')
       .update({ title, description: descriptionWithMeta, updated_at: new Date().toISOString() })
       .eq('id', surveyId);
-    if (surveyError) throw surveyError;
-
-    // Delete all existing questions (cascade deletes options + responses)
-    const { error: deleteError } = await supabase
-      .from('questions')
-      .delete()
-      .eq('survey_id', surveyId);
-    if (deleteError) throw deleteError;
-
-    // Re-insert all questions in current order
+    if (error) throw error;
+    const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
+    if (delErr) throw delErr;
     await saveQuestions(surveyId, questions);
   };
 
@@ -390,41 +298,29 @@ const CreateSurvey = () => {
 
       const { data: questionData, error: questionError } = await supabase
         .from('questions')
-        .insert({
-          survey_id: surveyId,
-          question_text: question.question_text,
-          question_type: dbQuestionType,
-          order_index: i,
-        })
-        .select()
-        .single();
+        .insert({ survey_id: surveyId, question_text: question.question_text, question_type: dbQuestionType, order_index: i })
+        .select().single();
       if (questionError) throw questionError;
 
       if (question.question_type === 'rating') {
         for (let j = 1; j <= 5; j++) {
-          const { error } = await supabase.from('options').insert({
-            question_id: questionData.id,
-            option_text: j.toString(),
-            order_index: j - 1,
-          });
+          const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: j.toString(), order_index: j - 1 });
           if (error) throw error;
         }
       } else if (question.question_type === 'text') {
-        const { error } = await supabase.from('options').insert({
-          question_id: questionData.id,
-          option_text: buildTextMetaOption(Number(question.text_max_answers)),
-          order_index: 9999,
-        });
+        const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
         if (error) throw error;
       } else {
         for (let j = 0; j < question.options.length; j++) {
-          const { error } = await supabase.from('options').insert({
-            question_id: questionData.id,
-            option_text: question.options[j].text,
-            order_index: j,
-          });
+          const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: question.options[j].text, order_index: j });
           if (error) throw error;
         }
+      }
+
+      // Kommentar-Meta-Option speichern
+      if (question.allow_comment) {
+        const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildCommentMetaOption(), order_index: 9998 });
+        if (error) throw error;
       }
     }
   };
@@ -458,55 +354,29 @@ const CreateSurvey = () => {
 
         {/* Survey Details */}
         <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Umfrage-Details</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>Umfrage-Details</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <div>
               <Label htmlFor="title">Titel *</Label>
-              <Input
-                id="title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="z.B. Kundenzufriedenheit 2024"
-              />
+              <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="z.B. Kundenzufriedenheit 2024" />
             </div>
             <div>
               <Label htmlFor="description">Beschreibung</Label>
-              <Textarea
-                id="description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Optionale Beschreibung der Umfrage"
-                rows={3}
-              />
+              <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optionale Beschreibung" rows={3} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="maxVotes">Stimmen-Limit (optional)</Label>
-                <Input
-                  id="maxVotes"
-                  type="number"
-                  min={1}
-                  value={maxVotes}
-                  onChange={(e) => setMaxVotes(e.target.value)}
-                  placeholder="z.B. 100"
-                />
+                <Input id="maxVotes" type="number" min={1} value={maxVotes} onChange={(e) => setMaxVotes(e.target.value)} placeholder="z.B. 100" />
               </div>
               <div>
                 <Label htmlFor="expiresAt">Ablaufdatum *</Label>
-                <Input
-                  id="expiresAt"
-                  type="datetime-local"
-                  value={expiresAtLocal}
-                  onChange={(e) => setExpiresAtLocal(e.target.value)}
-                />
+                <Input id="expiresAt" type="datetime-local" value={expiresAtLocal} onChange={(e) => setExpiresAtLocal(e.target.value)} />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Questions */}
         {questions.length > 0 && (
           <p className="text-sm text-gray-500 mb-3 flex items-center gap-1">
             <GripVertical className="w-4 h-4" />
@@ -532,41 +402,18 @@ const CreateSurvey = () => {
                 <Card className="overflow-hidden">
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
-                      <div
-                        className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 transition-colors p-1 rounded hover:bg-gray-100 flex-shrink-0"
-                        title="Ziehen zum Verschieben"
-                      >
+                      <div className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0" title="Ziehen zum Verschieben">
                         <GripVertical className="w-5 h-5" />
                       </div>
                       <CardTitle className="text-lg flex-1">Frage {qIndex + 1}</CardTitle>
                       <div className="flex gap-1">
-                        <Button
-                          onClick={() => moveQuestion(qIndex, qIndex - 1)}
-                          disabled={qIndex === 0}
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"
-                          title="Nach oben"
-                        >
+                        <Button onClick={() => moveQuestion(qIndex, qIndex - 1)} disabled={qIndex === 0} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30" title="Nach oben">
                           <ChevronUp className="w-4 h-4" />
                         </Button>
-                        <Button
-                          onClick={() => moveQuestion(qIndex, qIndex + 1)}
-                          disabled={qIndex === questions.length - 1}
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"
-                          title="Nach unten"
-                        >
+                        <Button onClick={() => moveQuestion(qIndex, qIndex + 1)} disabled={qIndex === questions.length - 1} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30" title="Nach unten">
                           <ChevronDown className="w-4 h-4" />
                         </Button>
-                        <Button
-                          onClick={() => removeQuestion(question.id)}
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                          title="Frage löschen"
-                        >
+                        <Button onClick={() => removeQuestion(question.id)} variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50" title="Frage löschen">
                           <Trash2 className="w-4 h-4" />
                         </Button>
                       </div>
@@ -576,22 +423,13 @@ const CreateSurvey = () => {
                   <CardContent className="space-y-4">
                     <div>
                       <Label>Fragetext *</Label>
-                      <Input
-                        value={question.question_text}
-                        onChange={(e) => updateQuestion(question.id, 'question_text', e.target.value)}
-                        placeholder="Ihre Frage hier eingeben"
-                      />
+                      <Input value={question.question_text} onChange={(e) => updateQuestion(question.id, 'question_text', e.target.value)} placeholder="Ihre Frage hier eingeben" />
                     </div>
 
                     <div>
                       <Label>Fragetyp</Label>
-                      <Select
-                        value={question.question_type}
-                        onValueChange={(value) => updateQuestion(question.id, 'question_type', value)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
+                      <Select value={question.question_type} onValueChange={(value) => updateQuestion(question.id, 'question_type', value)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="single">Einfachauswahl</SelectItem>
                           <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
@@ -602,23 +440,12 @@ const CreateSurvey = () => {
                     </div>
 
                     {question.question_type === 'text' && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <Label>Max. Antworten</Label>
-                          <Input
-                            type="number"
-                            min={1}
-                            max={10}
-                            value={question.text_max_answers}
-                            onChange={(e) =>
-                              updateQuestion(question.id, 'text_max_answers', Number.parseInt(e.target.value || '1', 10))
-                            }
-                            placeholder="z.B. 3"
-                          />
-                          <p className="text-xs text-gray-500 mt-1">
-                            Teilnehmer können bis zu so viele Begriffe eingeben.
-                          </p>
-                        </div>
+                      <div>
+                        <Label>Max. Antworten</Label>
+                        <Input type="number" min={1} max={10} value={question.text_max_answers}
+                          onChange={(e) => updateQuestion(question.id, 'text_max_answers', Number.parseInt(e.target.value || '1', 10))}
+                          placeholder="z.B. 3" />
+                        <p className="text-xs text-gray-500 mt-1">Teilnehmer können bis zu so viele Begriffe eingeben.</p>
                       </div>
                     )}
 
@@ -628,40 +455,43 @@ const CreateSurvey = () => {
                         <div className="space-y-2 mt-2">
                           {question.options.map((option, oIndex) => (
                             <div key={option.id} className="flex gap-2">
-                              <Input
-                                value={option.text}
-                                onChange={(e) => updateOption(question.id, option.id, e.target.value)}
-                                placeholder={`Option ${oIndex + 1}`}
-                              />
+                              <Input value={option.text} onChange={(e) => updateOption(question.id, option.id, e.target.value)} placeholder={`Option ${oIndex + 1}`} />
                               {question.options.length > 2 && (
-                                <Button
-                                  onClick={() => removeOption(question.id, option.id)}
-                                  variant="outline"
-                                  size="icon"
-                                >
+                                <Button onClick={() => removeOption(question.id, option.id)} variant="outline" size="icon">
                                   <Trash2 className="w-4 h-4" />
                                 </Button>
                               )}
                             </div>
                           ))}
-                          <Button
-                            onClick={() => addOption(question.id)}
-                            variant="outline"
-                            size="sm"
-                            className="w-full"
-                          >
-                            <Plus className="w-4 h-4 mr-2" />
-                            Option hinzufügen
+                          <Button onClick={() => addOption(question.id)} variant="outline" size="sm" className="w-full">
+                            <Plus className="w-4 h-4 mr-2" />Option hinzufügen
                           </Button>
                         </div>
                       </div>
                     )}
 
                     {question.question_type === 'rating' && (
-                      <p className="text-sm text-gray-600">
-                        Für Bewertungen werden automatisch die Optionen 1–5 angelegt.
-                      </p>
+                      <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
                     )}
+
+                    {/* Kommentar-Option */}
+                    <div className="flex items-start gap-3 pt-2 border-t border-gray-100">
+                      <Checkbox
+                        id={`comment-${question.id}`}
+                        checked={question.allow_comment}
+                        onCheckedChange={(checked) => updateQuestion(question.id, 'allow_comment', !!checked)}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <Label htmlFor={`comment-${question.id}`} className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
+                          <MessageSquare className="w-4 h-4 text-blue-500" />
+                          Persönlichen Kommentar erlauben
+                        </Label>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Teilnehmer können optional einen freien Kommentar (max. 1024 Zeichen) zur Frage hinterlassen.
+                        </p>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               </div>
@@ -671,14 +501,9 @@ const CreateSurvey = () => {
 
         <div className="flex gap-3">
           <Button onClick={addQuestion} variant="outline" className="flex-1">
-            <Plus className="w-5 h-5 mr-2" />
-            Frage hinzufügen
+            <Plus className="w-5 h-5 mr-2" />Frage hinzufügen
           </Button>
-          <Button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex-1 bg-blue-600 hover:bg-blue-700"
-          >
+          <Button onClick={handleSave} disabled={saving} className="flex-1 bg-blue-600 hover:bg-blue-700">
             <Save className="w-5 h-5 mr-2" />
             {saving ? 'Speichern...' : isEditMode ? 'Änderungen speichern' : 'Umfrage speichern'}
           </Button>

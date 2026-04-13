@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { CheckCircle2, BarChart3 } from 'lucide-react';
+import { CheckCircle2, BarChart3, MessageSquare } from 'lucide-react';
 import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
@@ -33,6 +33,13 @@ function parseTextMaxAnswers(optionText: string): number | null {
     // ignore
   }
   return null;
+}
+
+function isCommentMetaOption(optionText: string): boolean {
+  if (!isMetaOption(optionText)) return false;
+  try {
+    return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'comment';
+  } catch { return false; }
 }
 
 function getDeviceId() {
@@ -61,6 +68,7 @@ const SurveyPage = () => {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
   const [answers, setAnswers] = useState<{ [key: string]: string[] }>({});
+  const [comments, setComments] = useState<{ [key: string]: string }>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -178,6 +186,9 @@ const SurveyPage = () => {
     return parsed && parsed >= 1 ? parsed : 1;
   };
 
+  const hasCommentOption = (questionId: string) =>
+    (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
+
   const isTextQuestion = (questionId: string) => {
     return (options[questionId] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
   };
@@ -211,6 +222,11 @@ const SurveyPage = () => {
     while (next.length <= index) next.push('');
     next[index] = value;
     setAnswers({ ...answers, [questionId]: next });
+  };
+
+  const handleCommentChange = (questionId: string, value: string) => {
+    if (!canVote) return;
+    setComments({ ...comments, [questionId]: value });
   };
 
   const getOrCreateTextOptionId = async (questionId: string, term: string) => {
@@ -331,6 +347,18 @@ const SurveyPage = () => {
             if (error) throw error;
           }
 
+          // Kommentar speichern falls vorhanden
+          const comment = comments[question.id]?.trim();
+          if (comment && hasCommentOption(question.id)) {
+            const { error } = await supabase.from('responses').insert({
+              question_id: question.id,
+              option_id: null,
+              participant_id: participantId,
+              text_response: comment.slice(0, 1024),
+            });
+            if (error) throw error;
+          }
+
           continue;
         }
 
@@ -340,6 +368,18 @@ const SurveyPage = () => {
             question_id: question.id,
             option_id: optionId,
             participant_id: participantId,
+          });
+          if (error) throw error;
+        }
+
+        // Kommentar speichern falls vorhanden
+        const comment = comments[question.id]?.trim();
+        if (comment && hasCommentOption(question.id)) {
+          const { error } = await supabase.from('responses').insert({
+            question_id: question.id,
+            option_id: null,
+            participant_id: participantId,
+            text_response: comment.slice(0, 1024),
           });
           if (error) throw error;
         }
@@ -518,6 +558,29 @@ const SurveyPage = () => {
                       ))}
                       <p className="text-xs text-gray-500">
                         Tipp: Kurze Begriffe funktionieren am besten für die Begriffswolke.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Kommentarfeld */}
+                  {hasCommentOption(question.id) && (
+                    <div className="mt-4 pt-4 border-t border-gray-100">
+                      <Label htmlFor={`comment-${question.id}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
+                        <MessageSquare className="w-4 h-4 text-blue-400" />
+                        Persönlicher Kommentar <span className="text-gray-400">(optional)</span>
+                      </Label>
+                      <textarea
+                        id={`comment-${question.id}`}
+                        value={comments[question.id] || ''}
+                        onChange={(e) => handleCommentChange(question.id, e.target.value)}
+                        disabled={!canVote}
+                        maxLength={1024}
+                        rows={3}
+                        placeholder="Ihr persönlicher Kommentar zu dieser Frage…"
+                        className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-none disabled:opacity-50"
+                      />
+                      <p className="text-xs text-gray-400 text-right mt-1">
+                        {(comments[question.id] || '').length}/1024
                       </p>
                     </div>
                   )}
