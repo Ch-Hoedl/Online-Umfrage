@@ -46,7 +46,9 @@ const Dashboard = () => {
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
 
   // dialogs
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; status: 'draft' | 'published'; title: string } | null>(null);
+  const [deleteResponseCount, setDeleteResponseCount] = useState<number | null>(null);
+  const [loadingResponseCount, setLoadingResponseCount] = useState(false);
   const [publishSurvey, setPublishSurvey] = useState<Survey | null>(null);
   const [duplicateSurvey, setDuplicateSurvey] = useState<Survey | null>(null);
   const [duplicateTitle, setDuplicateTitle] = useState('');
@@ -87,15 +89,38 @@ const Dashboard = () => {
 
   // ── actions ─────────────────────────────────────────────────────────────────
 
+  const openDeleteDialog = async (survey: Survey) => {
+    setDeleteTarget({ id: survey.id, status: survey.status, title: survey.title });
+    if (survey.status === 'published') {
+      setLoadingResponseCount(true);
+      setDeleteResponseCount(null);
+      try {
+        const { data: qs } = await supabase.from('questions').select('id').eq('survey_id', survey.id);
+        const qIds = (qs || []).map((q: any) => q.id);
+        if (qIds.length > 0) {
+          const { data: rs } = await supabase.from('responses').select('participant_id').in('question_id', qIds);
+          const participants = new Set((rs || []).map((r: any) => r.participant_id));
+          setDeleteResponseCount(participants.size);
+        } else {
+          setDeleteResponseCount(0);
+        }
+      } catch {
+        setDeleteResponseCount(0);
+      } finally {
+        setLoadingResponseCount(false);
+      }
+    }
+  };
+
   const handleDelete = async () => {
-    if (!deleteId) return;
+    if (!deleteTarget) return;
     try {
-      const { error } = await supabase.from('surveys').delete().eq('id', deleteId);
+      const { error } = await supabase.from('surveys').delete().eq('id', deleteTarget.id);
       if (error) throw error;
       toast.success('Umfrage gelöscht');
       loadSurveys();
     } catch { toast.error('Fehler beim Löschen'); }
-    finally { setDeleteId(null); }
+    finally { setDeleteTarget(null); setDeleteResponseCount(null); }
   };
 
   const handlePublish = async () => {
@@ -215,7 +240,7 @@ const Dashboard = () => {
             <Copy className="w-4 h-4" />
           </Button>
           <Button
-            onClick={() => setDeleteId(survey.id)}
+            onClick={() => openDeleteDialog(survey)}
             variant="outline"
             size="icon"
             className="text-red-500 hover:text-red-700 hover:bg-red-50"
@@ -279,6 +304,15 @@ const Dashboard = () => {
               title="Als neue Vorlage duplizieren"
             >
               <Copy className="w-4 h-4" />
+            </Button>
+            <Button
+              onClick={() => openDeleteDialog(survey)}
+              variant="outline"
+              size="icon"
+              className="text-red-500 hover:text-red-700 hover:bg-red-50"
+              title="Löschen"
+            >
+              <Trash2 className="w-4 h-4" />
             </Button>
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
@@ -412,19 +446,78 @@ const Dashboard = () => {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Delete confirmation */}
-      <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
+      {/* Delete confirmation – Draft */}
+      <AlertDialog
+        open={!!deleteTarget && deleteTarget.status === 'draft'}
+        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Vorlage löschen?</AlertDialogTitle>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Trash2 className="w-5 h-5 text-red-500" />
+              Vorlage löschen?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Diese Aktion kann nicht rückgängig gemacht werden. Alle Fragen werden ebenfalls gelöscht.
+              Die Vorlage <strong>„{deleteTarget?.title}"</strong> wird unwiderruflich gelöscht.
+              Alle Fragen und Antwortoptionen werden ebenfalls entfernt.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Abbrechen</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">
-              Löschen
+              <Trash2 className="w-4 h-4 mr-2" />
+              Endgültig löschen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete confirmation – Published (with response count warning) */}
+      <AlertDialog
+        open={!!deleteTarget && deleteTarget.status === 'published'}
+        onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteResponseCount(null); } }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-700">
+              <Trash2 className="w-5 h-5" />
+              Produktive Umfrage löschen?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-sm text-gray-700">
+                <p>
+                  Sie sind dabei, die produktive Umfrage{' '}
+                  <strong>„{deleteTarget?.title}"</strong> dauerhaft zu löschen.
+                </p>
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 space-y-1">
+                  <p className="font-semibold text-red-800">Folgende Daten werden unwiderruflich gelöscht:</p>
+                  <ul className="list-disc list-inside text-red-700 space-y-0.5">
+                    <li>Die Umfrage und alle Fragen</li>
+                    <li>Alle Antwortoptionen</li>
+                    <li>
+                      {loadingResponseCount
+                        ? 'Antworten werden gezählt…'
+                        : deleteResponseCount !== null
+                          ? <>Alle Antworten von <strong>{deleteResponseCount} {deleteResponseCount === 1 ? 'Teilnehmer' : 'Teilnehmern'}</strong></>
+                          : 'Alle gesammelten Antworten'}
+                    </li>
+                  </ul>
+                </div>
+                <p className="font-medium text-gray-900">
+                  Diese Aktion kann nicht rückgängig gemacht werden.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              disabled={loadingResponseCount}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Ja, alles löschen
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
