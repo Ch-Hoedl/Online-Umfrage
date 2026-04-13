@@ -17,6 +17,17 @@ import { CheckCircle2, BarChart3, MessageSquare, ChevronLeft, ChevronRight, Send
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
 const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
 const META_PREFIX = '__dyad_meta__:';
+const SURVEY_META_PREFIXES = ['__dyad_meta__:', '__dyad_survey_meta__:'];
+
+function stripMetaFromDescription(desc: string | null | undefined): string {
+  if (!desc) return '';
+  // Remove any line that starts with a known meta prefix
+  return desc
+    .split('\n')
+    .filter((line) => !SURVEY_META_PREFIXES.some((p) => line.trim().startsWith(p)))
+    .join('\n')
+    .trim();
+}
 
 function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
 
@@ -90,7 +101,7 @@ const SurveyPage = () => {
 
       const expiresAt = surveyData.expires_at ?? null;
       const maxVotes = surveyData.max_votes ?? null;
-      setSurvey({ ...surveyData, expires_at: expiresAt, max_votes: maxVotes });
+      setSurvey({ ...surveyData, description: stripMetaFromDescription(surveyData.description), expires_at: expiresAt, max_votes: maxVotes });
 
       setExpired(!!expiresAt && new Date(expiresAt).getTime() <= Date.now());
       setAlreadyVoted(hasVotedLocally(surveyData.id));
