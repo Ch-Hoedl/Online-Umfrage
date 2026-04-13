@@ -72,6 +72,18 @@ const Dashboard = () => {
 
   const drafts = useMemo(() => surveys.filter((s) => s.status === 'draft'), [surveys]);
   const published = useMemo(() => surveys.filter((s) => s.status === 'published'), [surveys]);
+  
+  // Private templates: created by current user
+  const privateTemplates = useMemo(() =>
+    drafts.filter((s) => s.created_by === user?.id),
+    [drafts, user?.id]
+  );
+  
+  // Public templates: created by others and marked as public
+  const publicTemplates = useMemo(() =>
+    drafts.filter((s) => s.created_by !== user?.id && s.visibility === 'public'),
+    [drafts, user?.id]
+  );
 
   useEffect(() => {
     loadSurveys();
@@ -183,6 +195,9 @@ const Dashboard = () => {
           published_at: now,
           max_votes: publishSurvey.max_votes ?? null,
           expires_at: publishSurvey.expires_at ?? null,
+          visibility: 'private', // Published surveys are not templates
+          allow_copy: true,
+          allow_edit: false,
         })
         .select('*').single();
       if (surveyError) throw surveyError;
@@ -248,6 +263,9 @@ const Dashboard = () => {
           status: 'draft',
           max_votes: duplicateSurvey.max_votes ?? null,
           expires_at: duplicateSurvey.expires_at ?? null,
+          visibility: 'private', // Always private when duplicating
+          allow_copy: true,
+          allow_edit: false,
         })
         .select('*').single();
       if (surveyError) throw surveyError;
@@ -442,15 +460,73 @@ const Dashboard = () => {
     );
   };
 
-  const EmptyState = ({ mode }: { mode: 'draft' | 'published' }) => (
+  const SurveyCardPublic = ({ survey }: { survey: Survey }) => {
+    const canEdit = survey.allow_edit;
+    const canCopy = survey.allow_copy;
+    
+    return (
+      <Card className="hover:shadow-lg transition-all border-2 border-purple-200 bg-purple-50/30">
+        <CardHeader>
+          <div className="flex justify-between items-start gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <Users className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
+              </div>
+              <CardDescription className="line-clamp-2">
+                {survey.description || 'Keine Beschreibung'}
+              </CardDescription>
+            </div>
+            <Badge className="bg-purple-100 text-purple-700 border-purple-300 flex-shrink-0">Öffentlich</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+            <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+            <span>Erstellt von anderem Benutzer</span>
+          </div>
+          <div className="flex gap-2">
+            {canEdit && (
+              <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-purple-300 hover:bg-purple-50">
+                <Edit className="w-4 h-4 mr-2" />Bearbeiten
+              </Button>
+            )}
+            {canCopy && (
+              <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" className={canEdit ? '' : 'flex-1'}>
+                <Copy className="w-4 h-4 mr-2" />Kopieren
+              </Button>
+            )}
+            {!canEdit && !canCopy && (
+              <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-purple-300 hover:bg-purple-50">
+                <Eye className="w-4 h-4 mr-2" />Ansehen
+              </Button>
+            )}
+          </div>
+          {canCopy && (
+            <Button onClick={() => setPublishSurvey(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
+              <Rocket className="w-4 h-4 mr-2" />Produktiv schalten
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  };
+
+  const EmptyState = ({ mode }: { mode: 'draft' | 'published' | 'public' }) => (
     <Card className="border-2 border-dashed col-span-full">
       <CardContent className="flex flex-col items-center justify-center py-16">
-        {mode === 'draft' ? <FileText className="w-16 h-16 text-amber-400 mb-4" /> : <Rocket className="w-16 h-16 text-green-400 mb-4" />}
+        {mode === 'draft' && <FileText className="w-16 h-16 text-amber-400 mb-4" />}
+        {mode === 'published' && <Rocket className="w-16 h-16 text-green-400 mb-4" />}
+        {mode === 'public' && <Users className="w-16 h-16 text-purple-400 mb-4" />}
         <h3 className="text-xl font-semibold text-gray-900 mb-2">
-          {mode === 'draft' ? 'Keine Vorlagen vorhanden' : 'Keine produktiven Umfragen'}
+          {mode === 'draft' && 'Keine Vorlagen vorhanden'}
+          {mode === 'published' && 'Keine produktiven Umfragen'}
+          {mode === 'public' && 'Keine öffentlichen Vorlagen'}
         </h3>
         <p className="text-gray-600 mb-6 text-center max-w-sm">
-          {mode === 'draft' ? 'Erstellen Sie eine neue Vorlage und gestalten Sie Ihre Umfrage.' : 'Schalten Sie eine Vorlage produktiv, um sie mit Teilnehmern zu teilen.'}
+          {mode === 'draft' && 'Erstellen Sie eine neue Vorlage und gestalten Sie Ihre Umfrage.'}
+          {mode === 'published' && 'Schalten Sie eine Vorlage produktiv, um sie mit Teilnehmern zu teilen.'}
+          {mode === 'public' && 'Andere Benutzer haben noch keine Vorlagen öffentlich geteilt.'}
         </p>
         {mode === 'draft' && (
           <Button onClick={() => navigate('/admin/create')} className="bg-blue-600 hover:bg-blue-700">
@@ -498,13 +574,20 @@ const Dashboard = () => {
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="drafts">
+        <Tabs defaultValue="private">
           <TabsList className="mb-6 h-12">
-            <TabsTrigger value="drafts" className="gap-2 px-6">
-              <FileText className="w-4 h-4" />
-              Vorlagen
-              {drafts.length > 0 && (
-                <span className="ml-1 bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">{drafts.length}</span>
+            <TabsTrigger value="private" className="gap-2 px-6">
+              <Lock className="w-4 h-4" />
+              Meine Vorlagen
+              {privateTemplates.length > 0 && (
+                <span className="ml-1 bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">{privateTemplates.length}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="public" className="gap-2 px-6">
+              <Users className="w-4 h-4" />
+              Öffentliche Vorlagen
+              {publicTemplates.length > 0 && (
+                <span className="ml-1 bg-purple-100 text-purple-700 text-xs font-semibold px-2 py-0.5 rounded-full">{publicTemplates.length}</span>
               )}
             </TabsTrigger>
             <TabsTrigger value="published" className="gap-2 px-6">
@@ -516,9 +599,15 @@ const Dashboard = () => {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="drafts">
+          <TabsContent value="private">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {drafts.length === 0 ? <EmptyState mode="draft" /> : drafts.map((s) => <SurveyCardDraft key={s.id} survey={s} />)}
+              {privateTemplates.length === 0 ? <EmptyState mode="draft" /> : privateTemplates.map((s) => <SurveyCardDraft key={s.id} survey={s} />)}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="public">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {publicTemplates.length === 0 ? <EmptyState mode="public" /> : publicTemplates.map((s) => <SurveyCardPublic key={s.id} survey={s} />)}
             </div>
           </TabsContent>
 

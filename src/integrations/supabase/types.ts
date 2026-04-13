@@ -10,6 +10,9 @@ export interface Survey {
   created_at: string;
   updated_at: string;
   published_at?: string | null;
+  visibility: 'private' | 'public';
+  allow_copy: boolean;
+  allow_edit: boolean;
 }
 
 export interface Question {

@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag } from 'lucide-react';
+import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag, Users, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -71,6 +71,12 @@ const CreateSurvey = () => {
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(isEditMode);
+  
+  // Template sharing settings
+  const [visibility, setVisibility] = useState<'private' | 'public'>('private');
+  const [allowCopy, setAllowCopy] = useState(true);
+  const [allowEdit, setAllowEdit] = useState(false);
+  const [isOwner, setIsOwner] = useState(true);
 
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -102,6 +108,12 @@ const CreateSurvey = () => {
         const d = new Date(surveyData.expires_at);
         setExpiresAtLocal(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
       }
+      
+      // Load visibility settings
+      setVisibility(surveyData.visibility || 'private');
+      setAllowCopy(surveyData.allow_copy ?? true);
+      setAllowEdit(surveyData.allow_edit ?? false);
+      setIsOwner(surveyData.created_by === user?.id);
 
       const { data: questionsData, error: questionsError } = await supabase
         .from('questions').select('*').eq('survey_id', surveyId).order('order_index');
@@ -289,7 +301,18 @@ const CreateSurvey = () => {
   const createSurvey = async (expiresAt: string, parsedMaxVotes: number | null) => {
     const { data: survey, error } = await supabase
       .from('surveys')
-      .insert({ title, description, created_by: user?.id, status: 'draft', is_active: false, max_votes: parsedMaxVotes, expires_at: expiresAt })
+      .insert({
+        title,
+        description,
+        created_by: user?.id,
+        status: 'draft',
+        is_active: false,
+        max_votes: parsedMaxVotes,
+        expires_at: expiresAt,
+        visibility,
+        allow_copy: allowCopy,
+        allow_edit: allowEdit
+      })
       .select().single();
     if (error) throw error;
     await saveQuestions(survey.id, questions);
@@ -298,7 +321,16 @@ const CreateSurvey = () => {
   const updateSurvey = async (surveyId: string, expiresAt: string, parsedMaxVotes: number | null) => {
     console.log('[CreateSurvey] Updating survey:', surveyId);
     const { error } = await supabase.from('surveys')
-      .update({ title, description, max_votes: parsedMaxVotes, expires_at: expiresAt, updated_at: new Date().toISOString() })
+      .update({
+        title,
+        description,
+        max_votes: parsedMaxVotes,
+        expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+        visibility,
+        allow_copy: allowCopy,
+        allow_edit: allowEdit
+      })
       .eq('id', surveyId);
     if (error) {
       console.error('[CreateSurvey] Error updating survey:', error);
@@ -418,6 +450,73 @@ const CreateSurvey = () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Template Sharing Settings - Only for owners */}
+        {isOwner && (
+          <Card className="mb-6 border-purple-200">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-purple-600" />
+                Vorlagen-Freigabe
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <Label htmlFor="visibility">Sichtbarkeit</Label>
+                <Select value={visibility} onValueChange={(v: 'private' | 'public') => setVisibility(v)}>
+                  <SelectTrigger id="visibility">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="private">
+                      <div className="flex items-center gap-2">
+                        <Lock className="w-4 h-4" />
+                        <span>Privat - Nur ich kann diese Vorlage sehen</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="public">
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4" />
+                        <span>Öffentlich - Alle Benutzer können diese Vorlage sehen</span>
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {visibility === 'public' && (
+                <div className="space-y-3 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                  <p className="text-sm font-medium text-purple-900">Berechtigungen für andere Benutzer:</p>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="allowCopy"
+                      checked={allowCopy}
+                      onCheckedChange={(checked) => setAllowCopy(checked as boolean)}
+                    />
+                    <Label htmlFor="allowCopy" className="text-sm cursor-pointer">
+                      Andere dürfen diese Vorlage kopieren und verwenden
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="allowEdit"
+                      checked={allowEdit}
+                      onCheckedChange={(checked) => setAllowEdit(checked as boolean)}
+                    />
+                    <Label htmlFor="allowEdit" className="text-sm cursor-pointer">
+                      Andere dürfen diese Vorlage bearbeiten
+                    </Label>
+                  </div>
+                  {allowEdit && (
+                    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                      ⚠️ Achtung: Wenn Sie anderen Benutzern Bearbeitungsrechte geben, können diese die Vorlage dauerhaft verändern.
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {questions.length > 0 && (
           <p className="text-sm text-gray-500 mb-3 flex items-center gap-1">
