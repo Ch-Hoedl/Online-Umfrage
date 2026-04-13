@@ -13,6 +13,9 @@ export interface Survey {
   visibility: 'private' | 'public';
   allow_copy: boolean;
   allow_edit: boolean;
+  version: number;
+  editing_by: string | null;
+  editing_since: string | null;
 }
 
 export interface Question {
