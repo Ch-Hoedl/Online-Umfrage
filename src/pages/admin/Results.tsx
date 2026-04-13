@@ -5,25 +5,15 @@ import { Survey, Question, Option, Response } from '@/integrations/supabase/type
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, QrCode, Share2 } from 'lucide-react';
+import { ArrowLeft, QrCode, Share2, Lock } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
 const META_PREFIX = '__dyad_meta__:';
@@ -43,92 +33,64 @@ const Results = () => {
 
   const surveyUrl = `${window.location.origin}/survey/${id}`;
 
-  useEffect(() => {
-    loadData();
-  }, [id]);
+  useEffect(() => { loadData(); }, [id]);
 
   const loadData = async () => {
     try {
       const { data: surveyData, error: surveyError } = await supabase
-        .from('surveys')
-        .select('*')
-        .eq('id', id)
-        .single();
-
+        .from('surveys').select('*').eq('id', id).single();
       if (surveyError) throw surveyError;
       setSurvey(surveyData);
 
       const { data: questionsData, error: questionsError } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('survey_id', id)
-        .order('order_index');
-
+        .from('questions').select('*').eq('survey_id', id).order('order_index');
       if (questionsError) throw questionsError;
       setQuestions(questionsData || []);
 
       const { data: optionsData, error: optionsError } = await supabase
-        .from('options')
-        .select('*')
-        .in('question_id', questionsData?.map((q) => q.id) || []);
-
+        .from('options').select('*').in('question_id', questionsData?.map((q) => q.id) || []);
       if (optionsError) throw optionsError;
 
       const optionsByQuestion: { [key: string]: Option[] } = {};
       optionsData?.forEach((option) => {
-        if (!optionsByQuestion[option.question_id]) {
-          optionsByQuestion[option.question_id] = [];
-        }
+        if (!optionsByQuestion[option.question_id]) optionsByQuestion[option.question_id] = [];
         optionsByQuestion[option.question_id].push(option);
       });
       setOptions(optionsByQuestion);
 
       const { data: responsesData, error: responsesError } = await supabase
-        .from('responses')
-        .select('*')
-        .in('question_id', questionsData?.map((q) => q.id) || []);
-
+        .from('responses').select('*').in('question_id', questionsData?.map((q) => q.id) || []);
       if (responsesError) throw responsesError;
       setResponses(responsesData || []);
-    } catch (error) {
-      toast.error('Fehler beim Laden der Daten');
-    } finally {
-      setLoading(false);
-    }
+    } catch { toast.error('Fehler beim Laden der Daten'); }
+    finally { setLoading(false); }
   };
 
   const getChartData = (questionId: string) => {
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
     const questionResponses = responses.filter((r) => r.question_id === questionId);
-
     return questionOptions.map((option) => ({
       name: option.option_text,
       value: questionResponses.filter((r) => r.option_id === option.id).length,
     }));
   };
 
-  const isTextQuestion = (questionId: string) => {
-    return (options[questionId] || []).some((o) => isMetaOption(o.option_text));
-  };
+  const isTextQuestion = (questionId: string) =>
+    (options[questionId] || []).some((o) => isMetaOption(o.option_text));
 
   const getWordCloud = (questionId: string) => {
     const questionResponses = responses.filter((r) => r.question_id === questionId);
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
-
     const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
     const counts = new Map<string, number>();
-
     for (const r of questionResponses) {
       const text = idToText.get(r.option_id ?? '');
       if (!text) continue;
       counts.set(text, (counts.get(text) || 0) + 1);
     }
-
-    const items = Array.from(counts.entries())
+    return Array.from(counts.entries())
       .map(([text, count]) => ({ text, count }))
       .sort((a, b) => b.count - a.count);
-
-    return items;
   };
 
   const copyToClipboard = () => {
@@ -139,7 +101,7 @@ const Results = () => {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
       </div>
     );
   }
@@ -156,65 +118,89 @@ const Results = () => {
   }
 
   const totalResponses = new Set(responses.map((r) => r.participant_id)).size;
+  const isPublished = survey.status === 'published';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
       <div className="container mx-auto px-4 max-w-7xl">
+
+        {/* Header */}
         <div className="flex items-center gap-4 mb-8">
           <Button onClick={() => navigate('/admin')} variant="outline" size="icon">
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <div className="flex-1">
-            <h1 className="text-3xl font-bold text-gray-900">{survey.title}</h1>
+            <div className="flex items-center gap-3 mb-1">
+              <h1 className="text-3xl font-bold text-gray-900">{survey.title}</h1>
+              <Badge className={isPublished
+                ? 'bg-green-100 text-green-700 border-green-300'
+                : 'bg-amber-100 text-amber-700 border-amber-300'}>
+                {isPublished ? 'Produktiv' : 'Vorlage'}
+              </Badge>
+            </div>
             <p className="text-gray-600">{totalResponses} Teilnehmer</p>
           </div>
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button className="bg-blue-600 hover:bg-blue-700">
-                <QrCode className="w-5 h-5 mr-2" />
-                QR-Code anzeigen
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle>Umfrage teilen</DialogTitle>
-              </DialogHeader>
-              <div className="flex flex-col items-center gap-4 py-4">
-                <div className="bg-white p-4 rounded-lg border-2">
-                  <QRCodeSVG value={surveyUrl} size={256} />
-                </div>
-                <div className="w-full">
-                  <div className="flex gap-2">
+
+          {isPublished ? (
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button className="bg-blue-600 hover:bg-blue-700">
+                  <QrCode className="w-5 h-5 mr-2" />
+                  QR-Code / Teilen
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Umfrage teilen</DialogTitle>
+                  <DialogDescription>Scannen Sie den QR-Code oder kopieren Sie den Link.</DialogDescription>
+                </DialogHeader>
+                <div className="flex flex-col items-center gap-4 py-4">
+                  <div className="bg-white p-4 rounded-xl border-2">
+                    <QRCodeSVG value={surveyUrl} size={220} />
+                  </div>
+                  <div className="flex gap-2 w-full">
                     <input
                       type="text"
                       value={surveyUrl}
                       readOnly
-                      className="flex-1 px-3 py-2 border rounded-md text-sm"
+                      className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50"
                     />
                     <Button onClick={copyToClipboard} size="icon">
                       <Share2 className="w-4 h-4" />
                     </Button>
                   </div>
                 </div>
-              </div>
-            </DialogContent>
-          </Dialog>
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+              <Lock className="w-4 h-4 flex-shrink-0" />
+              Teilen erst nach Produktivschaltung möglich
+            </div>
+          )}
         </div>
 
+        {/* No responses yet */}
+        {totalResponses === 0 && (
+          <Card className="mb-6 border-blue-200 bg-blue-50">
+            <CardContent className="pt-4 pb-4 text-sm text-blue-800">
+              Noch keine Antworten vorhanden. Teilen Sie die Umfrage, um erste Ergebnisse zu erhalten.
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Charts */}
         <div className="space-y-6">
           {questions.map((question) => {
             if (isTextQuestion(question.id)) {
               const cloud = getWordCloud(question.id);
               const max = Math.max(1, ...cloud.map((c) => c.count));
-
               return (
                 <Card key={question.id}>
-                  <CardHeader>
-                    <CardTitle>{question.question_text}</CardTitle>
-                  </CardHeader>
+                  <CardHeader><CardTitle>{question.question_text}</CardTitle></CardHeader>
                   <CardContent>
                     {cloud.length === 0 ? (
-                      <p className="text-sm text-gray-600">Noch keine Antworten.</p>
+                      <p className="text-sm text-gray-500">Noch keine Antworten.</p>
                     ) : (
                       <div className="flex flex-wrap gap-2">
                         {cloud.map((item) => {
@@ -238,12 +224,9 @@ const Results = () => {
             }
 
             const chartData = getChartData(question.id);
-
             return (
               <Card key={question.id}>
-                <CardHeader>
-                  <CardTitle>{question.question_text}</CardTitle>
-                </CardHeader>
+                <CardHeader><CardTitle>{question.question_text}</CardTitle></CardHeader>
                 <CardContent>
                   <Tabs defaultValue="bar" className="w-full">
                     <TabsList className="grid w-full grid-cols-3">
@@ -257,7 +240,7 @@ const Results = () => {
                         <BarChart data={chartData}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="name" />
-                          <YAxis />
+                          <YAxis allowDecimals={false} />
                           <Tooltip />
                           <Legend />
                           <Bar dataKey="value" fill="#3b82f6" name="Antworten" />
@@ -270,7 +253,7 @@ const Results = () => {
                         <LineChart data={chartData}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="name" />
-                          <YAxis />
+                          <YAxis allowDecimals={false} />
                           <Tooltip />
                           <Legend />
                           <Line type="monotone" dataKey="value" stroke="#3b82f6" name="Antworten" strokeWidth={2} />
@@ -283,12 +266,10 @@ const Results = () => {
                         <PieChart>
                           <Pie
                             data={chartData}
-                            cx="50%"
-                            cy="50%"
+                            cx="50%" cy="50%"
                             labelLine={false}
                             label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                             outerRadius={100}
-                            fill="#8884d8"
                             dataKey="value"
                           >
                             {chartData.map((_, index) => (

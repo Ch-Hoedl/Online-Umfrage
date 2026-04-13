@@ -4,6 +4,7 @@ export interface Survey {
   description: string | null;
   created_by: string;
   is_active: boolean;
+  status: 'draft' | 'published';
   max_votes?: number | null;
   expires_at?: string | null;
   created_at: string;

@@ -357,7 +357,7 @@ const CreateSurvey = () => {
   const createSurvey = async (descriptionWithMeta: string) => {
     const { data: survey, error: surveyError } = await supabase
       .from('surveys')
-      .insert({ title, description: descriptionWithMeta, created_by: user?.id })
+      .insert({ title, description: descriptionWithMeta, created_by: user?.id, status: 'draft', is_active: false })
       .select()
       .single();
     if (surveyError) throw surveyError;
