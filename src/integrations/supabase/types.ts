@@ -44,7 +44,10 @@ export interface Profile {
   id: string;
   email: string | null;
   full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
   role: 'user' | 'admin' | 'super_admin';
   approved: boolean;
   created_at: string;
+  last_login_at: string | null;
 }

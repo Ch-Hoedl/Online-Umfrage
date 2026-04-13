@@ -40,6 +40,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       console.log('[AuthContext] Profile loaded:', data);
       setProfile(data as Profile);
+      
+      // Update last_login_at
+      await supabase
+        .from('profiles')
+        .update({ last_login_at: new Date().toISOString() })
+        .eq('id', userId);
     } catch (err) {
       console.error('[AuthContext] Failed to load profile:', err);
       setProfile(null);

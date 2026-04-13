@@ -4,7 +4,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { Profile } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, Shield, User, Crown, CheckCircle2, XCircle, Trash2, Clock, Bell } from 'lucide-react';
+import { ArrowLeft, Shield, User, Crown, CheckCircle2, XCircle, Trash2, Clock, Bell, Edit, Calendar } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -14,12 +14,22 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter,
+  DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 const UserManagement = () => {
   const [users, setUsers] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [editTarget, setEditTarget] = useState<Profile | null>(null);
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
+  const [saving, setSaving] = useState(false);
   const navigate = useNavigate();
   const { user, profile: currentUserProfile } = useAuth();
 
@@ -105,6 +115,41 @@ const UserManagement = () => {
     }
   };
 
+  const openEditDialog = (userProfile: Profile) => {
+    setEditTarget(userProfile);
+    setEditFirstName(userProfile.first_name || '');
+    setEditLastName(userProfile.last_name || '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editTarget) return;
+    if (!editFirstName.trim() || !editLastName.trim()) {
+      toast.error('Vor- und Nachname dürfen nicht leer sein');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const fullName = `${editFirstName.trim()} ${editLastName.trim()}`;
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          first_name: editFirstName.trim(),
+          last_name: editLastName.trim(),
+          full_name: fullName,
+        })
+        .eq('id', editTarget.id);
+      if (error) throw error;
+      toast.success('Name aktualisiert');
+      setEditTarget(null);
+      loadUsers();
+    } catch {
+      toast.error('Fehler beim Aktualisieren');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const updateUserRole = async (userId: string, newRole: 'user' | 'admin' | 'super_admin') => {
     try {
       const { error } = await supabase.from('profiles').update({ role: newRole }).eq('id', userId);
@@ -140,6 +185,26 @@ const UserManagement = () => {
     }
   };
 
+  const formatLastLogin = (iso: string | null | undefined): string => {
+    if (!iso) return 'Noch nie';
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Gerade eben';
+    if (diffMins < 60) return `vor ${diffMins} Min.`;
+    if (diffHours < 24) return `vor ${diffHours} Std.`;
+    if (diffDays < 7) return `vor ${diffDays} Tag${diffDays === 1 ? '' : 'en'}`;
+    
+    return d.toLocaleDateString('de-AT', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  };
+
   const pendingUsers = users.filter((u) => !u.approved && u.role !== 'super_admin');
   const approvedUsers = users.filter((u) => u.approved || u.role === 'super_admin');
 
@@ -167,7 +232,9 @@ const UserManagement = () => {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="font-semibold text-gray-900 truncate">
-              {userProfile.full_name || 'Kein Name'}
+              {userProfile.first_name && userProfile.last_name
+                ? `${userProfile.first_name} ${userProfile.last_name}`
+                : userProfile.full_name || 'Kein Name'}
             </h3>
             {!showApproveActions && (
               <Badge className={getRoleBadgeColor(userProfile.role)}>
@@ -179,11 +246,22 @@ const UserManagement = () => {
             )}
           </div>
           <p className="text-sm text-gray-500 truncate">{userProfile.email}</p>
-          <p className="text-xs text-gray-400 mt-0.5">
-            Registriert: {new Date(userProfile.created_at).toLocaleDateString('de-AT', {
-              day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
-            })}
-          </p>
+          <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
+            <span>
+              Registriert: {new Date(userProfile.created_at).toLocaleDateString('de-AT', {
+                day: '2-digit', month: '2-digit', year: 'numeric'
+              })}
+            </span>
+            {!showApproveActions && (
+              <>
+                <span>•</span>
+                <span className="flex items-center gap-1">
+                  <Calendar className="w-3 h-3" />
+                  Letzter Login: {formatLastLogin(userProfile.last_login_at)}
+                </span>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -212,6 +290,14 @@ const UserManagement = () => {
           <>
             {userProfile.id !== user?.id && (
               <>
+                <Button
+                  onClick={() => openEditDialog(userProfile)}
+                  variant="outline"
+                  size="icon"
+                  title="Namen bearbeiten"
+                >
+                  <Edit className="w-4 h-4" />
+                </Button>
                 <Select
                   value={userProfile.role}
                   onValueChange={(value: 'user' | 'admin' | 'super_admin') =>
@@ -340,6 +426,47 @@ const UserManagement = () => {
         </Tabs>
       </div>
 
+      {/* Edit name dialog */}
+      <Dialog open={!!editTarget} onOpenChange={(open) => { if (!open && !saving) setEditTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Namen bearbeiten</DialogTitle>
+            <DialogDescription>
+              Ändern Sie den Vor- und Nachnamen des Benutzers.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="edit-first-name">Vorname *</Label>
+              <Input
+                id="edit-first-name"
+                value={editFirstName}
+                onChange={(e) => setEditFirstName(e.target.value)}
+                placeholder="Max"
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label htmlFor="edit-last-name">Nachname *</Label>
+              <Input
+                id="edit-last-name"
+                value={editLastName}
+                onChange={(e) => setEditLastName(e.target.value)}
+                placeholder="Mustermann"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditTarget(null)} disabled={saving}>
+              Abbrechen
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={saving} className="bg-blue-600 hover:bg-blue-700">
+              {saving ? 'Speichern...' : 'Speichern'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete confirmation */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
         <AlertDialogContent>
@@ -351,8 +478,11 @@ const UserManagement = () => {
             <AlertDialogDescription asChild>
               <div className="space-y-2 text-sm text-gray-700">
                 <p>
-                  Der Benutzer <strong>{deleteTarget?.full_name || deleteTarget?.email}</strong> wird
-                  unwiderruflich aus der Benutzerverwaltung entfernt.
+                  Der Benutzer <strong>
+                    {deleteTarget?.first_name && deleteTarget?.last_name
+                      ? `${deleteTarget.first_name} ${deleteTarget.last_name}`
+                      : deleteTarget?.full_name || deleteTarget?.email}
+                  </strong> wird unwiderruflich aus der Benutzerverwaltung entfernt.
                 </p>
                 <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">
                   Der Benutzer verliert sofort den Zugang zur Anwendung.
