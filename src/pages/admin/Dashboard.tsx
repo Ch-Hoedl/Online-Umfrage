@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy,
-  Rocket, FileText, QrCode, Share2, Lock,
+  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -38,12 +38,22 @@ function normalizeSurvey(s: any): Survey {
   } as Survey;
 }
 
+function formatTimestamp(iso: string | null | undefined): string {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  return d.toLocaleDateString('de-AT', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
 // ── component ─────────────────────────────────────────────────────────────────
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
   const [loading, setLoading] = useState(true);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
+  const [responseCounts, setResponseCounts] = useState<{ [surveyId: string]: number }>({});
 
   // dialogs
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; status: 'draft' | 'published'; title: string } | null>(null);
@@ -82,9 +92,43 @@ const Dashboard = () => {
     try {
       const { data, error } = await supabase.from('surveys').select('*').order('created_at', { ascending: false });
       if (error) throw error;
-      setSurveys((data || []).map(normalizeSurvey));
+      const normalized = (data || []).map(normalizeSurvey);
+      setSurveys(normalized);
+
+      // Teilnehmerzahlen für produktive Umfragen laden
+      const publishedSurveys = normalized.filter((s) => s.status === 'published');
+      if (publishedSurveys.length > 0) {
+        loadResponseCounts(publishedSurveys.map((s) => s.id));
+      }
     } catch { toast.error('Fehler beim Laden der Umfragen'); }
     finally { setLoading(false); }
+  };
+
+  const loadResponseCounts = async (surveyIds: string[]) => {
+    try {
+      // Alle Fragen der produktiven Umfragen laden
+      const { data: questions } = await supabase
+        .from('questions').select('id, survey_id').in('survey_id', surveyIds);
+      if (!questions || questions.length === 0) return;
+
+      const qIds = questions.map((q: any) => q.id);
+      const { data: responses } = await supabase
+        .from('responses').select('question_id, participant_id').in('question_id', qIds);
+
+      // Teilnehmer pro Umfrage zählen
+      const counts: { [surveyId: string]: Set<string> } = {};
+      for (const q of questions) {
+        if (!counts[q.survey_id]) counts[q.survey_id] = new Set();
+      }
+      for (const r of (responses || [])) {
+        const q = questions.find((q: any) => q.id === r.question_id);
+        if (q) counts[q.survey_id]?.add(r.participant_id);
+      }
+
+      const result: { [surveyId: string]: number } = {};
+      for (const [sid, set] of Object.entries(counts)) result[sid] = set.size;
+      setResponseCounts(result);
+    } catch { /* ignore */ }
   };
 
   // ── actions ─────────────────────────────────────────────────────────────────
@@ -221,7 +265,12 @@ const Dashboard = () => {
           <Badge className="bg-amber-100 text-amber-700 border-amber-300 flex-shrink-0">Vorlage</Badge>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-3">
+        {/* Timestamp */}
+        <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+          <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+          <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp((survey as any).updated_at || survey.created_at)}</span></span>
+        </div>
         <div className="flex gap-2">
           <Button
             onClick={() => navigate(`/admin/edit/${survey.id}`)}
@@ -262,6 +311,7 @@ const Dashboard = () => {
 
   const SurveyCardPublished = ({ survey }: { survey: Survey }) => {
     const url = `${window.location.origin}/survey/${survey.id}`;
+    const count = responseCounts[survey.id] ?? null;
     return (
       <Card className="hover:shadow-lg transition-all border-2 border-green-200 bg-green-50/20">
         <CardHeader>
@@ -278,7 +328,17 @@ const Dashboard = () => {
             <Badge className="bg-green-100 text-green-700 border-green-300 flex-shrink-0">Produktiv</Badge>
           </div>
         </CardHeader>
-        <CardContent className="space-y-2">
+        <CardContent className="space-y-3">
+          {/* Teilnehmeranzahl */}
+          <div className="flex items-center gap-1.5 text-xs bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+            <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-green-600" />
+            <span className="text-gray-600">Teilnehmer:</span>
+            {count === null ? (
+              <span className="text-gray-400 italic">wird geladen…</span>
+            ) : (
+              <span className="font-semibold text-green-700">{count} {count === 1 ? 'Person' : 'Personen'}</span>
+            )}
+          </div>
           <div className="flex gap-2">
             <Button
               onClick={() => navigate(`/admin/results/${survey.id}`)}
