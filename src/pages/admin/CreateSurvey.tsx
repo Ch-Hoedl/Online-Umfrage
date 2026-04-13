@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Profile, Question } from '@/integrations/supabase/types';
@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Trash2, ArrowLeft, Save } from 'lucide-react';
+import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { encodeDescriptionWithMeta } from '@/utils/surveyMeta';
@@ -32,10 +32,15 @@ const CreateSurvey = () => {
   const [description, setDescription] = useState('');
   const [maxVotes, setMaxVotes] = useState('');
   const [expiresAtLocal, setExpiresAtLocal] = useState('');
-
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
+
+  // Drag & Drop state
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const draggedIndex = useRef<number>(-1);
+
   const navigate = useNavigate();
   const { user } = useAuth();
 
@@ -45,22 +50,19 @@ const CreateSurvey = () => {
 
   const loadUserProfile = async () => {
     if (!user) return;
-
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
         .single();
-
       if (error) throw error;
       setUserProfile(data);
-
       if (data.role === 'user') {
         toast.error('Sie haben keine Berechtigung, Umfragen zu erstellen');
         navigate('/admin');
       }
-    } catch (error) {
+    } catch {
       toast.error('Fehler beim Laden des Benutzerprofils');
       navigate('/admin');
     }
@@ -86,11 +88,18 @@ const CreateSurvey = () => {
     setQuestions(questions.filter((q) => q.id !== questionId));
   };
 
+  const moveQuestion = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= questions.length) return;
+    const next = [...questions];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    setQuestions(next);
+  };
+
   const updateQuestion = (questionId: string, field: string, value: any) => {
     setQuestions(
       questions.map((q) => {
         if (q.id !== questionId) return q;
-
         const next = { ...q, [field]: value } as QuestionData;
         if (field === 'question_type' && value === 'text' && !next.text_max_answers) {
           next.text_max_answers = 3;
@@ -124,78 +133,86 @@ const CreateSurvey = () => {
     setQuestions(
       questions.map((q) =>
         q.id === questionId
-          ? {
-              ...q,
-              options: q.options.map((o) =>
-                o.id === optionId ? { ...o, text } : o
-              ),
-            }
+          ? { ...q, options: q.options.map((o) => (o.id === optionId ? { ...o, text } : o)) }
           : q
       )
     );
   };
 
-  const handleSave = async () => {
-    if (!title.trim()) {
-      toast.error('Bitte geben Sie einen Titel ein');
-      return;
-    }
+  // Drag & Drop handlers
+  const handleDragStart = (e: React.DragEvent, id: string, index: number) => {
+    setDraggedId(id);
+    draggedIndex.current = index;
+    e.dataTransfer.effectAllowed = 'move';
+    // Transparent ghost image
+    const ghost = document.createElement('div');
+    ghost.style.position = 'absolute';
+    ghost.style.top = '-9999px';
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 0, 0);
+    setTimeout(() => document.body.removeChild(ghost), 0);
+  };
 
-    if (!expiresAtLocal.trim()) {
-      toast.error('Bitte geben Sie ein Ablaufdatum an');
+  const handleDragOver = (e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (id !== draggedId) setDragOverId(id);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!draggedId || draggedId === targetId) {
+      setDraggedId(null);
+      setDragOverId(null);
       return;
     }
+    const fromIndex = draggedIndex.current;
+    const toIndex = questions.findIndex((q) => q.id === targetId);
+    if (fromIndex !== -1 && toIndex !== -1) {
+      moveQuestion(fromIndex, toIndex);
+    }
+    setDraggedId(null);
+    setDragOverId(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedId(null);
+    setDragOverId(null);
+  };
+
+  const handleSave = async () => {
+    if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return; }
+    if (!expiresAtLocal.trim()) { toast.error('Bitte geben Sie ein Ablaufdatum an'); return; }
 
     const expiresAtDate = new Date(expiresAtLocal);
-    if (Number.isNaN(expiresAtDate.getTime())) {
-      toast.error('Bitte geben Sie ein gültiges Ablaufdatum an');
-      return;
-    }
-
-    if (expiresAtDate.getTime() <= Date.now()) {
-      toast.error('Das Ablaufdatum muss in der Zukunft liegen');
-      return;
-    }
+    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Bitte geben Sie ein gültiges Ablaufdatum an'); return; }
+    if (expiresAtDate.getTime() <= Date.now()) { toast.error('Das Ablaufdatum muss in der Zukunft liegen'); return; }
 
     const expiresAt = expiresAtDate.toISOString();
-
     const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
     if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
-      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein');
-      return;
+      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein'); return;
     }
-
-    if (questions.length === 0) {
-      toast.error('Bitte fügen Sie mindestens eine Frage hinzu');
-      return;
-    }
+    if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return; }
 
     for (const question of questions) {
-      if (!question.question_text.trim()) {
-        toast.error('Alle Fragen müssen einen Text haben');
-        return;
-      }
-
+      if (!question.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return; }
       if (question.question_type === 'text') {
         const maxAnswers = Number(question.text_max_answers);
         if (!Number.isFinite(maxAnswers) || maxAnswers < 1 || maxAnswers > 10) {
-          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen');
-          return;
+          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen'); return;
         }
       }
-
       if (
         question.question_type !== 'rating' &&
         question.question_type !== 'text' &&
         question.options.some((o) => !o.text.trim())
       ) {
-        toast.error('Alle Antwortoptionen müssen ausgefüllt sein');
-        return;
+        toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return;
       }
     }
 
     setSaving(true);
-
     try {
       const descriptionWithMeta = encodeDescriptionWithMeta(description, {
         max_votes: parsedMaxVotes,
@@ -204,20 +221,14 @@ const CreateSurvey = () => {
 
       const { data: survey, error: surveyError } = await supabase
         .from('surveys')
-        .insert({
-          title,
-          description: descriptionWithMeta,
-          created_by: user?.id,
-        })
+        .insert({ title, description: descriptionWithMeta, created_by: user?.id })
         .select()
         .single();
-
       if (surveyError) throw surveyError;
 
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
-        const dbQuestionType: string =
-          question.question_type === 'text' ? 'multiple' : question.question_type;
+        const dbQuestionType = question.question_type === 'text' ? 'multiple' : question.question_type;
 
         const { data: questionData, error: questionError } = await supabase
           .from('questions')
@@ -229,43 +240,32 @@ const CreateSurvey = () => {
           })
           .select()
           .single();
-
         if (questionError) throw questionError;
 
         if (question.question_type === 'rating') {
           for (let j = 1; j <= 5; j++) {
-            const { error: optionError } = await supabase
-              .from('options')
-              .insert({
-                question_id: questionData.id,
-                option_text: j.toString(),
-                order_index: j - 1,
-              });
-
-            if (optionError) throw optionError;
+            const { error } = await supabase.from('options').insert({
+              question_id: questionData.id,
+              option_text: j.toString(),
+              order_index: j - 1,
+            });
+            if (error) throw error;
           }
         } else if (question.question_type === 'text') {
-          const maxAnswers = Number(question.text_max_answers);
-          const { error: metaOptionError } = await supabase
-            .from('options')
-            .insert({
-              question_id: questionData.id,
-              option_text: buildTextMetaOption(maxAnswers),
-              order_index: 9999,
-            });
-
-          if (metaOptionError) throw metaOptionError;
+          const { error } = await supabase.from('options').insert({
+            question_id: questionData.id,
+            option_text: buildTextMetaOption(Number(question.text_max_answers)),
+            order_index: 9999,
+          });
+          if (error) throw error;
         } else {
           for (let j = 0; j < question.options.length; j++) {
-            const { error: optionError } = await supabase
-              .from('options')
-              .insert({
-                question_id: questionData.id,
-                option_text: question.options[j].text,
-                order_index: j,
-              });
-
-            if (optionError) throw optionError;
+            const { error } = await supabase.from('options').insert({
+              question_id: questionData.id,
+              option_text: question.options[j].text,
+              order_index: j,
+            });
+            if (error) throw error;
           }
         }
       }
@@ -293,6 +293,7 @@ const CreateSurvey = () => {
           </div>
         </div>
 
+        {/* Survey Details */}
         <Card className="mb-6">
           <CardHeader>
             <CardTitle>Umfrage-Details</CardTitle>
@@ -317,7 +318,6 @@ const CreateSurvey = () => {
                 rows={3}
               />
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="maxVotes">Stimmen-Limit (optional)</Label>
@@ -343,124 +343,171 @@ const CreateSurvey = () => {
           </CardContent>
         </Card>
 
-        <div className="space-y-4 mb-6">
-          {questions.map((question, qIndex) => (
-            <Card key={question.id}>
-              <CardHeader>
-                <div className="flex justify-between items-start">
-                  <CardTitle className="text-lg">Frage {qIndex + 1}</CardTitle>
-                  <Button
-                    onClick={() => removeQuestion(question.id)}
-                    variant="ghost"
-                    size="icon"
-                    className="text-red-600 hover:text-red-700"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label>Fragetext *</Label>
-                  <Input
-                    value={question.question_text}
-                    onChange={(e) =>
-                      updateQuestion(question.id, 'question_text', e.target.value)
-                    }
-                    placeholder="Ihre Frage hier eingeben"
-                  />
-                </div>
+        {/* Questions */}
+        {questions.length > 0 && (
+          <p className="text-sm text-gray-500 mb-3 flex items-center gap-1">
+            <GripVertical className="w-4 h-4" />
+            Fragen per Drag &amp; Drop oder mit den Pfeilen verschieben
+          </p>
+        )}
 
-                <div>
-                  <Label>Fragetyp</Label>
-                  <Select
-                    value={question.question_type}
-                    onValueChange={(value) =>
-                      updateQuestion(question.id, 'question_type', value)
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="single">Einfachauswahl</SelectItem>
-                      <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
-                      <SelectItem value="rating">Bewertung (1-5)</SelectItem>
-                      <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+        <div className="space-y-3 mb-6">
+          {questions.map((question, qIndex) => {
+            const isDragging = draggedId === question.id;
+            const isDragOver = dragOverId === question.id;
 
-                {question.question_type === 'text' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <Label>Max. Antworten</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={10}
-                        value={question.text_max_answers}
-                        onChange={(e) =>
-                          updateQuestion(
-                            question.id,
-                            'text_max_answers',
-                            Number.parseInt(e.target.value || '1', 10)
-                          )
-                        }
-                        placeholder="z.B. 3"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Teilnehmer können bis zu so viele Begriffe eingeben.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {question.question_type !== 'rating' && question.question_type !== 'text' && (
-                  <div>
-                    <Label>Antwortmöglichkeiten *</Label>
-                    <div className="space-y-2 mt-2">
-                      {question.options.map((option, oIndex) => (
-                        <div key={option.id} className="flex gap-2">
-                          <Input
-                            value={option.text}
-                            onChange={(e) =>
-                              updateOption(question.id, option.id, e.target.value)
-                            }
-                            placeholder={`Option ${oIndex + 1}`}
-                          />
-                          {question.options.length > 2 && (
-                            <Button
-                              onClick={() => removeOption(question.id, option.id)}
-                              variant="outline"
-                              size="icon"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          )}
-                        </div>
-                      ))}
-                      <Button
-                        onClick={() => addOption(question.id)}
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
+            return (
+              <div
+                key={question.id}
+                draggable
+                onDragStart={(e) => handleDragStart(e, question.id, qIndex)}
+                onDragOver={(e) => handleDragOver(e, question.id)}
+                onDrop={(e) => handleDrop(e, question.id)}
+                onDragEnd={handleDragEnd}
+                className={`transition-all duration-150 ${isDragging ? 'opacity-40 scale-[0.98]' : 'opacity-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 rounded-xl' : ''}`}
+              >
+                <Card className="overflow-hidden">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center gap-2">
+                      {/* Drag handle */}
+                      <div
+                        className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 transition-colors p-1 rounded hover:bg-gray-100 flex-shrink-0"
+                        title="Ziehen zum Verschieben"
                       >
-                        <Plus className="w-4 h-4 mr-2" />
-                        Option hinzufügen
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                        <GripVertical className="w-5 h-5" />
+                      </div>
 
-                {question.question_type === 'rating' && (
-                  <p className="text-sm text-gray-600">
-                    Für Bewertungen werden automatisch die Optionen 1–5 angelegt.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          ))}
+                      <CardTitle className="text-lg flex-1">Frage {qIndex + 1}</CardTitle>
+
+                      {/* Arrow buttons */}
+                      <div className="flex gap-1">
+                        <Button
+                          onClick={() => moveQuestion(qIndex, qIndex - 1)}
+                          disabled={qIndex === 0}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"
+                          title="Nach oben"
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          onClick={() => moveQuestion(qIndex, qIndex + 1)}
+                          disabled={qIndex === questions.length - 1}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"
+                          title="Nach unten"
+                        >
+                          <ChevronDown className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          onClick={() => removeQuestion(question.id)}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                          title="Frage löschen"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="space-y-4">
+                    <div>
+                      <Label>Fragetext *</Label>
+                      <Input
+                        value={question.question_text}
+                        onChange={(e) => updateQuestion(question.id, 'question_text', e.target.value)}
+                        placeholder="Ihre Frage hier eingeben"
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Fragetyp</Label>
+                      <Select
+                        value={question.question_type}
+                        onValueChange={(value) => updateQuestion(question.id, 'question_type', value)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="single">Einfachauswahl</SelectItem>
+                          <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
+                          <SelectItem value="rating">Bewertung (1-5)</SelectItem>
+                          <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {question.question_type === 'text' && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <Label>Max. Antworten</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={question.text_max_answers}
+                            onChange={(e) =>
+                              updateQuestion(question.id, 'text_max_answers', Number.parseInt(e.target.value || '1', 10))
+                            }
+                            placeholder="z.B. 3"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">
+                            Teilnehmer können bis zu so viele Begriffe eingeben.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {question.question_type !== 'rating' && question.question_type !== 'text' && (
+                      <div>
+                        <Label>Antwortmöglichkeiten *</Label>
+                        <div className="space-y-2 mt-2">
+                          {question.options.map((option, oIndex) => (
+                            <div key={option.id} className="flex gap-2">
+                              <Input
+                                value={option.text}
+                                onChange={(e) => updateOption(question.id, option.id, e.target.value)}
+                                placeholder={`Option ${oIndex + 1}`}
+                              />
+                              {question.options.length > 2 && (
+                                <Button
+                                  onClick={() => removeOption(question.id, option.id)}
+                                  variant="outline"
+                                  size="icon"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              )}
+                            </div>
+                          ))}
+                          <Button
+                            onClick={() => addOption(question.id)}
+                            variant="outline"
+                            size="sm"
+                            className="w-full"
+                          >
+                            <Plus className="w-4 h-4 mr-2" />
+                            Option hinzufügen
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {question.question_type === 'rating' && (
+                      <p className="text-sm text-gray-600">
+                        Für Bewertungen werden automatisch die Optionen 1–5 angelegt.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            );
+          })}
         </div>
 
         <div className="flex gap-3">
