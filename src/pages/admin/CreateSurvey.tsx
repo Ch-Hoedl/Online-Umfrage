@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Profile, Question } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-import { encodeDescriptionWithMeta } from '@/utils/surveyMeta';
+import { encodeDescriptionWithMeta, decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const META_PREFIX = '__dyad_meta__:';
 
@@ -19,21 +19,42 @@ function buildTextMetaOption(maxAnswers: number) {
   return `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
 }
 
+function isMetaOption(text: string) {
+  return text.startsWith(META_PREFIX);
+}
+
+function parseTextMaxAnswers(optionText: string): number | null {
+  if (!isMetaOption(optionText)) return null;
+  try {
+    const raw = optionText.slice(META_PREFIX.length);
+    const parsed = JSON.parse(raw);
+    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') {
+      return parsed.maxAnswers;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 interface QuestionData {
   id: string;
+  dbId?: string; // existing DB id when editing
   question_text: string;
   question_type: Question['question_type'];
-  options: { id: string; text: string }[];
+  options: { id: string; dbId?: string; text: string }[];
   text_max_answers: number;
 }
 
 const CreateSurvey = () => {
+  const { id: editId } = useParams<{ id?: string }>();
+  const isEditMode = !!editId;
+
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [maxVotes, setMaxVotes] = useState('');
   const [expiresAtLocal, setExpiresAtLocal] = useState('');
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
+  const [loadingData, setLoadingData] = useState(isEditMode);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
 
   // Drag & Drop state
@@ -47,6 +68,12 @@ const CreateSurvey = () => {
   useEffect(() => {
     loadUserProfile();
   }, []);
+
+  useEffect(() => {
+    if (isEditMode && editId) {
+      loadExistingSurvey(editId);
+    }
+  }, [editId]);
 
   const loadUserProfile = async () => {
     if (!user) return;
@@ -67,6 +94,98 @@ const CreateSurvey = () => {
       navigate('/admin');
     }
   };
+
+  const loadExistingSurvey = async (surveyId: string) => {
+    setLoadingData(true);
+    try {
+      // Load survey
+      const { data: surveyData, error: surveyError } = await supabase
+        .from('surveys')
+        .select('*')
+        .eq('id', surveyId)
+        .single();
+      if (surveyError) throw surveyError;
+
+      const decoded = decodeDescriptionWithMeta(surveyData.description);
+      setTitle(surveyData.title);
+      setDescription(decoded.description || '');
+
+      if (decoded.meta.max_votes) {
+        setMaxVotes(String(decoded.meta.max_votes));
+      }
+      if (decoded.meta.expires_at) {
+        // Convert ISO string to datetime-local format
+        const d = new Date(decoded.meta.expires_at);
+        const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+          .toISOString()
+          .slice(0, 16);
+        setExpiresAtLocal(local);
+      }
+
+      // Load questions
+      const { data: questionsData, error: questionsError } = await supabase
+        .from('questions')
+        .select('*')
+        .eq('survey_id', surveyId)
+        .order('order_index');
+      if (questionsError) throw questionsError;
+
+      const loadedQuestions = questionsData || [];
+
+      // Load options for all questions
+      const questionIds = loadedQuestions.map((q) => q.id);
+      let optionsData: any[] = [];
+      if (questionIds.length > 0) {
+        const { data: opts, error: optsError } = await supabase
+          .from('options')
+          .select('*')
+          .in('question_id', questionIds)
+          .order('order_index');
+        if (optsError) throw optsError;
+        optionsData = opts || [];
+      }
+
+      const optionsByQuestion: { [key: string]: any[] } = {};
+      optionsData.forEach((opt) => {
+        if (!optionsByQuestion[opt.question_id]) optionsByQuestion[opt.question_id] = [];
+        optionsByQuestion[opt.question_id].push(opt);
+      });
+
+      const mappedQuestions: QuestionData[] = loadedQuestions.map((q) => {
+        const qOptions = optionsByQuestion[q.id] || [];
+        const metaOpt = qOptions.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
+        const isTextQ = !!metaOpt;
+        const visibleOptions = qOptions.filter((o: any) => !isMetaOption(o.option_text));
+
+        // Determine display type
+        let displayType: Question['question_type'] = q.question_type;
+        if (isTextQ) displayType = 'text';
+
+        return {
+          id: crypto.randomUUID(),
+          dbId: q.id,
+          question_text: q.question_text,
+          question_type: displayType,
+          text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : 3,
+          options: visibleOptions.map((o: any) => ({
+            id: crypto.randomUUID(),
+            dbId: o.id,
+            text: o.option_text,
+          })),
+        };
+      });
+
+      setQuestions(mappedQuestions);
+    } catch (error) {
+      console.error(error);
+      toast.error('Fehler beim Laden der Umfrage');
+      navigate('/admin');
+    } finally {
+      setLoadingData(false);
+    }
+  };
+
+  // ── Question helpers ──────────────────────────────────────────────────────
 
   const addQuestion = () => {
     setQuestions([
@@ -139,12 +258,12 @@ const CreateSurvey = () => {
     );
   };
 
-  // Drag & Drop handlers
+  // ── Drag & Drop ───────────────────────────────────────────────────────────
+
   const handleDragStart = (e: React.DragEvent, id: string, index: number) => {
     setDraggedId(id);
     draggedIndex.current = index;
     e.dataTransfer.effectAllowed = 'move';
-    // Transparent ghost image
     const ghost = document.createElement('div');
     ghost.style.position = 'absolute';
     ghost.style.top = '-9999px';
@@ -168,9 +287,7 @@ const CreateSurvey = () => {
     }
     const fromIndex = draggedIndex.current;
     const toIndex = questions.findIndex((q) => q.id === targetId);
-    if (fromIndex !== -1 && toIndex !== -1) {
-      moveQuestion(fromIndex, toIndex);
-    }
+    if (fromIndex !== -1 && toIndex !== -1) moveQuestion(fromIndex, toIndex);
     setDraggedId(null);
     setDragOverId(null);
   };
@@ -180,105 +297,147 @@ const CreateSurvey = () => {
     setDragOverId(null);
   };
 
-  const handleSave = async () => {
-    if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return; }
-    if (!expiresAtLocal.trim()) { toast.error('Bitte geben Sie ein Ablaufdatum an'); return; }
+  // ── Validation ────────────────────────────────────────────────────────────
 
+  const validate = (): boolean => {
+    if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
+    if (!expiresAtLocal.trim()) { toast.error('Bitte geben Sie ein Ablaufdatum an'); return false; }
     const expiresAtDate = new Date(expiresAtLocal);
-    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Bitte geben Sie ein gültiges Ablaufdatum an'); return; }
-    if (expiresAtDate.getTime() <= Date.now()) { toast.error('Das Ablaufdatum muss in der Zukunft liegen'); return; }
-
-    const expiresAt = expiresAtDate.toISOString();
+    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Bitte geben Sie ein gültiges Ablaufdatum an'); return false; }
+    if (expiresAtDate.getTime() <= Date.now()) { toast.error('Das Ablaufdatum muss in der Zukunft liegen'); return false; }
     const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
     if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
-      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein'); return;
+      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein'); return false;
     }
-    if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return; }
-
-    for (const question of questions) {
-      if (!question.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return; }
-      if (question.question_type === 'text') {
-        const maxAnswers = Number(question.text_max_answers);
-        if (!Number.isFinite(maxAnswers) || maxAnswers < 1 || maxAnswers > 10) {
-          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen'); return;
+    if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
+    for (const q of questions) {
+      if (!q.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return false; }
+      if (q.question_type === 'text') {
+        const m = Number(q.text_max_answers);
+        if (!Number.isFinite(m) || m < 1 || m > 10) {
+          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen'); return false;
         }
       }
-      if (
-        question.question_type !== 'rating' &&
-        question.question_type !== 'text' &&
-        question.options.some((o) => !o.text.trim())
-      ) {
-        toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return;
+      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.options.some((o) => !o.text.trim())) {
+        toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false;
       }
     }
+    return true;
+  };
 
+  // ── Save (create or update) ───────────────────────────────────────────────
+
+  const handleSave = async () => {
+    if (!validate()) return;
     setSaving(true);
+
+    const expiresAt = new Date(expiresAtLocal).toISOString();
+    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
+    const descriptionWithMeta = encodeDescriptionWithMeta(description, {
+      max_votes: parsedMaxVotes,
+      expires_at: expiresAt,
+    });
+
     try {
-      const descriptionWithMeta = encodeDescriptionWithMeta(description, {
-        max_votes: parsedMaxVotes,
-        expires_at: expiresAt,
-      });
-
-      const { data: survey, error: surveyError } = await supabase
-        .from('surveys')
-        .insert({ title, description: descriptionWithMeta, created_by: user?.id })
-        .select()
-        .single();
-      if (surveyError) throw surveyError;
-
-      for (let i = 0; i < questions.length; i++) {
-        const question = questions[i];
-        const dbQuestionType = question.question_type === 'text' ? 'multiple' : question.question_type;
-
-        const { data: questionData, error: questionError } = await supabase
-          .from('questions')
-          .insert({
-            survey_id: survey.id,
-            question_text: question.question_text,
-            question_type: dbQuestionType,
-            order_index: i,
-          })
-          .select()
-          .single();
-        if (questionError) throw questionError;
-
-        if (question.question_type === 'rating') {
-          for (let j = 1; j <= 5; j++) {
-            const { error } = await supabase.from('options').insert({
-              question_id: questionData.id,
-              option_text: j.toString(),
-              order_index: j - 1,
-            });
-            if (error) throw error;
-          }
-        } else if (question.question_type === 'text') {
-          const { error } = await supabase.from('options').insert({
-            question_id: questionData.id,
-            option_text: buildTextMetaOption(Number(question.text_max_answers)),
-            order_index: 9999,
-          });
-          if (error) throw error;
-        } else {
-          for (let j = 0; j < question.options.length; j++) {
-            const { error } = await supabase.from('options').insert({
-              question_id: questionData.id,
-              option_text: question.options[j].text,
-              order_index: j,
-            });
-            if (error) throw error;
-          }
-        }
+      if (isEditMode && editId) {
+        await updateSurvey(editId, descriptionWithMeta);
+      } else {
+        await createSurvey(descriptionWithMeta);
       }
-
-      toast.success('Umfrage erfolgreich erstellt');
+      toast.success(isEditMode ? 'Umfrage erfolgreich aktualisiert' : 'Umfrage erfolgreich erstellt');
       navigate('/admin');
     } catch (error) {
       console.error(error);
-      toast.error('Fehler beim Erstellen der Umfrage');
+      toast.error(isEditMode ? 'Fehler beim Aktualisieren der Umfrage' : 'Fehler beim Erstellen der Umfrage');
     } finally {
       setSaving(false);
     }
   };
+
+  const createSurvey = async (descriptionWithMeta: string) => {
+    const { data: survey, error: surveyError } = await supabase
+      .from('surveys')
+      .insert({ title, description: descriptionWithMeta, created_by: user?.id })
+      .select()
+      .single();
+    if (surveyError) throw surveyError;
+    await saveQuestions(survey.id, questions);
+  };
+
+  const updateSurvey = async (surveyId: string, descriptionWithMeta: string) => {
+    // Update survey metadata
+    const { error: surveyError } = await supabase
+      .from('surveys')
+      .update({ title, description: descriptionWithMeta, updated_at: new Date().toISOString() })
+      .eq('id', surveyId);
+    if (surveyError) throw surveyError;
+
+    // Delete all existing questions (cascade deletes options + responses)
+    const { error: deleteError } = await supabase
+      .from('questions')
+      .delete()
+      .eq('survey_id', surveyId);
+    if (deleteError) throw deleteError;
+
+    // Re-insert all questions in current order
+    await saveQuestions(surveyId, questions);
+  };
+
+  const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
+    for (let i = 0; i < qs.length; i++) {
+      const question = qs[i];
+      const dbQuestionType = question.question_type === 'text' ? 'multiple' : question.question_type;
+
+      const { data: questionData, error: questionError } = await supabase
+        .from('questions')
+        .insert({
+          survey_id: surveyId,
+          question_text: question.question_text,
+          question_type: dbQuestionType,
+          order_index: i,
+        })
+        .select()
+        .single();
+      if (questionError) throw questionError;
+
+      if (question.question_type === 'rating') {
+        for (let j = 1; j <= 5; j++) {
+          const { error } = await supabase.from('options').insert({
+            question_id: questionData.id,
+            option_text: j.toString(),
+            order_index: j - 1,
+          });
+          if (error) throw error;
+        }
+      } else if (question.question_type === 'text') {
+        const { error } = await supabase.from('options').insert({
+          question_id: questionData.id,
+          option_text: buildTextMetaOption(Number(question.text_max_answers)),
+          order_index: 9999,
+        });
+        if (error) throw error;
+      } else {
+        for (let j = 0; j < question.options.length; j++) {
+          const { error } = await supabase.from('options').insert({
+            question_id: questionData.id,
+            option_text: question.options[j].text,
+            order_index: j,
+          });
+          if (error) throw error;
+        }
+      }
+    }
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  if (loadingData) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
@@ -288,8 +447,12 @@ const CreateSurvey = () => {
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Neue Umfrage erstellen</h1>
-            <p className="text-gray-600">Erstellen Sie Fragen und Antwortmöglichkeiten</p>
+            <h1 className="text-3xl font-bold text-gray-900">
+              {isEditMode ? 'Umfrage bearbeiten' : 'Neue Umfrage erstellen'}
+            </h1>
+            <p className="text-gray-600">
+              {isEditMode ? 'Ändern Sie Titel, Fragen und Antwortmöglichkeiten' : 'Erstellen Sie Fragen und Antwortmöglichkeiten'}
+            </p>
           </div>
         </div>
 
@@ -369,17 +532,13 @@ const CreateSurvey = () => {
                 <Card className="overflow-hidden">
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
-                      {/* Drag handle */}
                       <div
                         className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 transition-colors p-1 rounded hover:bg-gray-100 flex-shrink-0"
                         title="Ziehen zum Verschieben"
                       >
                         <GripVertical className="w-5 h-5" />
                       </div>
-
                       <CardTitle className="text-lg flex-1">Frage {qIndex + 1}</CardTitle>
-
-                      {/* Arrow buttons */}
                       <div className="flex gap-1">
                         <Button
                           onClick={() => moveQuestion(qIndex, qIndex - 1)}
@@ -521,7 +680,7 @@ const CreateSurvey = () => {
             className="flex-1 bg-blue-600 hover:bg-blue-700"
           >
             <Save className="w-5 h-5 mr-2" />
-            {saving ? 'Speichern...' : 'Umfrage speichern'}
+            {saving ? 'Speichern...' : isEditMode ? 'Änderungen speichern' : 'Umfrage speichern'}
           </Button>
         </div>
       </div>
