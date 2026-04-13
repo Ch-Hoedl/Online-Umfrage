@@ -14,7 +14,6 @@ import {
   BarChart3, MessageSquare, ChevronLeft, ChevronRight,
   Send, Eye, ArrowLeft, CheckCircle2,
 } from 'lucide-react';
-import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -60,12 +59,11 @@ const SurveyPreview = () => {
         .from('surveys').select('*').eq('id', id).single();
       if (error) throw error;
 
-      const decoded = decodeDescriptionWithMeta(surveyData.description);
       setSurvey({
         ...surveyData,
-        description: decoded.description,
-        expires_at: surveyData.expires_at ?? decoded.meta.expires_at ?? null,
-        max_votes: surveyData.max_votes ?? decoded.meta.max_votes ?? null,
+        description: surveyData.description,
+        expires_at: surveyData.expires_at ?? null,
+        max_votes: surveyData.max_votes ?? null,
       } as Survey);
 
       const { data: questionsData, error: qErr } = await supabase

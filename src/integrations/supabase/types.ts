@@ -5,8 +5,8 @@ export interface Survey {
   created_by: string;
   is_active: boolean;
   status: 'draft' | 'published';
-  max_votes?: number | null;
-  expires_at?: string | null;
+  max_votes: number | null;
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
   published_at?: string | null;
@@ -19,6 +19,7 @@ export interface Question {
   question_type: 'single' | 'multiple' | 'rating' | 'text';
   order_index: number;
   expected_responses?: number;
+  max_text_answers?: number | null;
   created_at: string;
 }
 

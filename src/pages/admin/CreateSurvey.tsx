@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Profile, Question } from '@/integrations/supabase/types';
+import { Profile, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,7 +12,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-import { encodeDescriptionWithMeta, decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const META_PREFIX = '__dyad_meta__:';
 
@@ -100,12 +99,11 @@ const CreateSurvey = () => {
       const { data: surveyData, error: surveyError } = await supabase.from('surveys').select('*').eq('id', surveyId).single();
       if (surveyError) throw surveyError;
 
-      const decoded = decodeDescriptionWithMeta(surveyData.description);
       setTitle(surveyData.title);
-      setDescription(decoded.description || '');
-      if (decoded.meta.max_votes) setMaxVotes(String(decoded.meta.max_votes));
-      if (decoded.meta.expires_at) {
-        const d = new Date(decoded.meta.expires_at);
+      setDescription(surveyData.description || '');
+      if (surveyData.max_votes) setMaxVotes(String(surveyData.max_votes));
+      if (surveyData.expires_at) {
+        const d = new Date(surveyData.expires_at);
         setExpiresAtLocal(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
       }
 
@@ -134,15 +132,23 @@ const CreateSurvey = () => {
         const metaOpt = qOptions.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
         const hasComment = qOptions.some((o: any) => isCommentMetaOption(o.option_text));
         const hasCategory = qOptions.some((o: any) => isCategoryMetaOption(o.option_text));
-        const isTextQ = !!metaOpt;
+        const isTextQ = q.question_type === 'text' || !!metaOpt;
         const visibleOptions = qOptions.filter((o: any) => !isMetaOption(o.option_text));
+
+        // Determine max text answers: prefer meta-option, then DB column
+        let textMaxAnswers = 3;
+        if (metaOpt) {
+          textMaxAnswers = parseTextMaxAnswers(metaOpt.option_text) ?? 3;
+        } else if (q.max_text_answers) {
+          textMaxAnswers = q.max_text_answers;
+        }
 
         return {
           id: crypto.randomUUID(),
           dbId: q.id,
           question_text: q.question_text,
           question_type: isTextQ ? 'text' : q.question_type,
-          text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : 3,
+          text_max_answers: textMaxAnswers,
           allow_comment: hasComment,
           is_category: hasCategory,
           options: visibleOptions.map((o: any) => ({ id: crypto.randomUUID(), dbId: o.id, text: o.option_text })),
@@ -188,7 +194,6 @@ const CreateSurvey = () => {
       if (q.id !== questionId) return q;
       const next = { ...q, [field]: value } as QuestionData;
       if (field === 'question_type' && value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
-      // Reset is_category if type changes away from single
       if (field === 'question_type' && value !== 'single') next.is_category = false;
       return next;
     }));
@@ -273,10 +278,9 @@ const CreateSurvey = () => {
     setSaving(true);
     const expiresAt = new Date(expiresAtLocal).toISOString();
     const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
-    const descriptionWithMeta = encodeDescriptionWithMeta(description, { max_votes: parsedMaxVotes, expires_at: expiresAt });
     try {
-      if (isEditMode && editId) await updateSurvey(editId, descriptionWithMeta);
-      else await createSurvey(descriptionWithMeta);
+      if (isEditMode && editId) await updateSurvey(editId, expiresAt, parsedMaxVotes);
+      else await createSurvey(expiresAt, parsedMaxVotes);
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (error) {
@@ -285,20 +289,22 @@ const CreateSurvey = () => {
     } finally { setSaving(false); }
   };
 
-  const createSurvey = async (descriptionWithMeta: string) => {
+  const createSurvey = async (expiresAt: string, parsedMaxVotes: number | null) => {
     const { data: survey, error } = await supabase
       .from('surveys')
-      .insert({ title, description: descriptionWithMeta, created_by: user?.id, status: 'draft', is_active: false })
+      .insert({ title, description, created_by: user?.id, status: 'draft', is_active: false, max_votes: parsedMaxVotes, expires_at: expiresAt })
       .select().single();
     if (error) throw error;
     await saveQuestions(survey.id, questions);
   };
 
-  const updateSurvey = async (surveyId: string, descriptionWithMeta: string) => {
+  const updateSurvey = async (surveyId: string, expiresAt: string, parsedMaxVotes: number | null) => {
     const { error } = await supabase.from('surveys')
-      .update({ title, description: descriptionWithMeta, updated_at: new Date().toISOString() })
+      .update({ title, description, max_votes: parsedMaxVotes, expires_at: expiresAt, updated_at: new Date().toISOString() })
       .eq('id', surveyId);
     if (error) throw error;
+
+    // Delete old questions (cascade deletes options and responses)
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
     if (delErr) throw delErr;
     await saveQuestions(surveyId, questions);
@@ -311,7 +317,13 @@ const CreateSurvey = () => {
 
       const { data: questionData, error: questionError } = await supabase
         .from('questions')
-        .insert({ survey_id: surveyId, question_text: question.question_text, question_type: dbQuestionType, order_index: i })
+        .insert({
+          survey_id: surveyId,
+          question_text: question.question_text,
+          question_type: dbQuestionType,
+          order_index: i,
+          max_text_answers: question.question_type === 'text' ? Number(question.text_max_answers) : null,
+        })
         .select().single();
       if (questionError) throw questionError;
 
@@ -321,6 +333,7 @@ const CreateSurvey = () => {
           if (error) throw error;
         }
       } else if (question.question_type === 'text') {
+        // Store meta-option for legacy compatibility
         const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
         if (error) throw error;
       } else {
@@ -335,7 +348,6 @@ const CreateSurvey = () => {
         if (error) throw error;
       }
 
-      // Kategorie-Meta-Option speichern
       if (question.is_category && question.question_type === 'single') {
         const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildCategoryMetaOption(), order_index: 9997 });
         if (error) throw error;

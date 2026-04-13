@@ -11,7 +11,6 @@ import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3, MessageSquare, ChevronLeft, ChevronRight, Send } from 'lucide-react';
-import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 // ── constants & helpers ───────────────────────────────────────────────────────
 
@@ -89,14 +88,12 @@ const SurveyPage = () => {
         .from('surveys').select('*').eq('id', id).eq('is_active', true).single();
       if (surveyError) throw surveyError;
 
-      const decoded = decodeDescriptionWithMeta(surveyData.description);
-      const expiresAt = surveyData.expires_at ?? decoded.meta.expires_at ?? null;
-      const maxVotes = surveyData.max_votes ?? decoded.meta.max_votes ?? null;
-      const normalizedSurvey: Survey = { ...surveyData, description: decoded.description, expires_at: expiresAt, max_votes: maxVotes };
-      setSurvey(normalizedSurvey);
+      const expiresAt = surveyData.expires_at ?? null;
+      const maxVotes = surveyData.max_votes ?? null;
+      setSurvey({ ...surveyData, expires_at: expiresAt, max_votes: maxVotes });
 
       setExpired(!!expiresAt && new Date(expiresAt).getTime() <= Date.now());
-      setAlreadyVoted(hasVotedLocally(normalizedSurvey.id));
+      setAlreadyVoted(hasVotedLocally(surveyData.id));
 
       const { data: questionsData, error: qErr } = await supabase
         .from('questions').select('*').eq('survey_id', id).order('order_index');
@@ -105,13 +102,14 @@ const SurveyPage = () => {
       setQuestions(loadedQuestions);
 
       const questionIds = loadedQuestions.map((q) => q.id);
+
       if (questionIds.length > 0) {
         const { data: respData } = await supabase
           .from('responses').select('participant_id').in('question_id', questionIds);
         const participants = new Set((respData || []).map((r) => r.participant_id));
         setParticipantCount(participants.size);
         const deviceId = getDeviceId();
-        if (participants.has(deviceId)) { setAlreadyVoted(true); markVotedLocally(normalizedSurvey.id); }
+        if (participants.has(deviceId)) { setAlreadyVoted(true); markVotedLocally(surveyData.id); }
         setLimitReached(!!maxVotes && participants.size >= maxVotes);
 
         const { data: optionsData } = await supabase
@@ -130,13 +128,26 @@ const SurveyPage = () => {
 
   // ── question helpers ──────────────────────────────────────────────────────────
 
-  const getTextMaxAnswers = (qid: string) => {
-    const meta = (options[qid] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
-    const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
-    return parsed && parsed >= 1 ? parsed : 1;
+  const getTextMaxAnswers = (qid: string): number => {
+    // First try meta-option approach (legacy)
+    const metaOpt = (options[qid] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
+    if (metaOpt) {
+      const parsed = parseTextMaxAnswers(metaOpt.option_text);
+      if (parsed && parsed >= 1) return parsed;
+    }
+    // Fall back to question's max_text_answers column
+    const q = questions.find((q) => q.id === qid);
+    return q?.max_text_answers ?? 1;
   };
+
   const hasCommentOption = (qid: string) => (options[qid] || []).some((o) => isCommentMetaOption(o.option_text));
-  const isTextQuestion = (qid: string) => (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
+
+  const isTextQuestion = (qid: string) => {
+    const q = questions.find((q) => q.id === qid);
+    if (q?.question_type === 'text') return true;
+    return (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
+  };
+
   const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
   // ── answer handlers ───────────────────────────────────────────────────────────
@@ -192,7 +203,7 @@ const SurveyPage = () => {
     if (!normalized) throw new Error('empty term');
     const existingInState = getVisibleOptions(qid).find((o) => o.option_text.toLowerCase() === normalized.toLowerCase());
     if (existingInState) return existingInState.id;
-    const { data: existing } = await supabase.from('options').select('*').eq('question_id', qid).eq('option_text', normalized).maybeSingle();
+    const { data: existing } = await supabase.from('options').select('*').eq('question_id', qid).ilike('option_text', normalized).maybeSingle();
     if (existing) return (existing as Option).id;
     const { data: created, error } = await supabase.from('options').insert({ question_id: qid, option_text: normalized, order_index: 0 }).select('*').single();
     if (error) throw error;

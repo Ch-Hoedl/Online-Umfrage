@@ -5,7 +5,7 @@ import { Survey, Question, Option, Response } from '@/integrations/supabase/type
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, QrCode, Share2, Lock, MessageSquare, Tag, Filter } from 'lucide-react';
+import { ArrowLeft, QrCode, Share2, Lock, MessageSquare, Tag, Filter, Download } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
@@ -15,8 +15,10 @@ import {
 } from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+// jsPDF imported dynamically to avoid build issues if not installed
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
+
 const META_PREFIX = '__dyad_meta__:';
 
 function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
@@ -36,6 +38,7 @@ const Results = () => {
   const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
   const [responses, setResponses] = useState<Response[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   // Category filter state
   const [selectedCategory, setSelectedCategory] = useState<string>('__all__');
@@ -95,7 +98,6 @@ const Results = () => {
    */
   const filteredParticipants: Set<string> | null = (() => {
     if (!categoryQuestion || selectedCategory === '__all__') return null;
-    // Find participants who answered the category question with the selected option
     const catResponses = responses.filter(
       (r) => r.question_id === categoryQuestion.id && r.option_id === selectedCategory
     );
@@ -121,8 +123,11 @@ const Results = () => {
     }));
   };
 
-  const isTextOnlyQuestion = (questionId: string) =>
-    (options[questionId] || []).some((o) => isTextMetaOption(o.option_text));
+  const isTextOnlyQuestion = (questionId: string) => {
+    const q = questions.find((q) => q.id === questionId);
+    if (q?.question_type === 'text') return true;
+    return (options[questionId] || []).some((o) => isTextMetaOption(o.option_text));
+  };
 
   const hasComments = (questionId: string) =>
     (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
@@ -147,6 +152,171 @@ const Results = () => {
     return Array.from(counts.entries())
       .map(([text, count]) => ({ text, count }))
       .sort((a, b) => b.count - a.count);
+  };
+
+  // ── Export ────────────────────────────────────────────────────────────────
+
+  const exportToPDF = async () => {
+    if (!survey) return;
+
+    setExporting(true);
+    toast.info('PDF wird erstellt...');
+
+    try {
+      const { jsPDF } = await import('jspdf');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      let yPosition = margin;
+
+      pdf.setFontSize(18);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(survey.title, margin, yPosition);
+      yPosition += 10;
+
+      if (survey.description) {
+        pdf.setFontSize(11);
+        pdf.setFont('helvetica', 'normal');
+        const descLines = pdf.splitTextToSize(survey.description, pageWidth - 2 * margin);
+        pdf.text(descLines, margin, yPosition);
+        yPosition += descLines.length * 5 + 5;
+      }
+
+      const totalResponses = new Set(responses.map((r) => r.participant_id)).size;
+      pdf.setFontSize(10);
+      pdf.text(`Teilnehmer: ${totalResponses}`, margin, yPosition);
+      yPosition += 10;
+
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+
+        if (yPosition > pageHeight - 40) {
+          pdf.addPage();
+          yPosition = margin;
+        }
+
+        pdf.setFontSize(12);
+        pdf.setFont('helvetica', 'bold');
+        const questionLines = pdf.splitTextToSize(`${i + 1}. ${question.question_text}`, pageWidth - 2 * margin);
+        pdf.text(questionLines, margin, yPosition);
+        yPosition += questionLines.length * 6 + 3;
+
+        if (isTextOnlyQuestion(question.id)) {
+          const cloud = getWordCloud(question.id);
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'normal');
+
+          if (cloud.length === 0) {
+            pdf.text('Noch keine Antworten.', margin + 5, yPosition);
+            yPosition += 6;
+          } else {
+            cloud.slice(0, 15).forEach((item) => {
+              if (yPosition > pageHeight - 20) {
+                pdf.addPage();
+                yPosition = margin;
+              }
+              pdf.text(`• ${item.text} (${item.count}×)`, margin + 5, yPosition);
+              yPosition += 5;
+            });
+          }
+        } else {
+          const chartData = getChartData(question.id);
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'normal');
+
+          chartData.forEach((item) => {
+            if (yPosition > pageHeight - 20) {
+              pdf.addPage();
+              yPosition = margin;
+            }
+            pdf.text(`• ${item.name}: ${item.value}`, margin + 5, yPosition);
+            yPosition += 5;
+          });
+        }
+
+        yPosition += 5;
+      }
+
+      pdf.save(`${survey.title.replace(/[^a-z0-9]/gi, '_')}_Ergebnisse.pdf`);
+      toast.success('PDF erfolgreich erstellt!');
+    } catch (error) {
+      console.error(error);
+      toast.error('Fehler beim Erstellen des PDFs');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportToCSV = () => {
+    if (!survey) return;
+
+    try {
+      const csvRows: string[] = [];
+
+      // Header
+      csvRows.push('Teilnehmer-ID,Frage,Fragetyp,Antwort,Zeitstempel');
+
+      // Daten
+      responses.forEach((response) => {
+        const question = questions.find((q) => q.id === response.question_id);
+        const option = options[response.question_id]?.find((o) => o.id === response.option_id);
+
+        if (question && option && !isMetaOption(option.option_text)) {
+          const row = [
+            response.participant_id,
+            `"${question.question_text.replace(/"/g, '""')}"`,
+            question.question_type,
+            `"${option.option_text.replace(/"/g, '""')}"`,
+            new Date(response.created_at).toLocaleString('de-DE'),
+          ];
+          csvRows.push(row.join(','));
+        }
+      });
+
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+
+      link.setAttribute('href', url);
+      link.setAttribute('download', `${survey.title.replace(/[^a-z0-9]/gi, '_')}_Rohdaten.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      toast.success('CSV erfolgreich exportiert!');
+    } catch (error) {
+      console.error(error);
+      toast.error('Fehler beim Erstellen der CSV');
+    }
+  };
+
+  const downloadQrCode = () => {
+    if (!survey) return;
+    const svg = document.querySelector('#qr-code-results-container svg');
+    if (!svg) return;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx?.drawImage(img, 0, 0);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `QR_${survey.title.replace(/[^a-z0-9]/gi, '_')}.png`;
+        link.click();
+        URL.revokeObjectURL(url);
+        toast.success('QR-Code heruntergeladen!');
+      });
+    };
+    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -204,12 +374,12 @@ const Results = () => {
       <div className="container mx-auto px-4 max-w-7xl">
 
         {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
+        <div className="flex items-center gap-4 mb-8 flex-wrap">
           <Button onClick={() => navigate('/admin')} variant="outline" size="icon">
             <ArrowLeft className="w-5 h-5" />
           </Button>
-          <div className="flex-1">
-            <div className="flex items-center gap-3 mb-1">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 mb-1 flex-wrap">
               <h1 className="text-3xl font-bold text-gray-900">{survey.title}</h1>
               <Badge className={isPublished ? 'bg-green-100 text-green-700 border-green-300' : 'bg-amber-100 text-amber-700 border-amber-300'}>
                 {isPublished ? 'Produktiv' : 'Vorlage'}
@@ -222,33 +392,50 @@ const Results = () => {
             </p>
           </div>
 
-          {isPublished ? (
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button className="bg-blue-600 hover:bg-blue-700">
-                  <QrCode className="w-5 h-5 mr-2" />QR-Code / Teilen
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Umfrage teilen</DialogTitle>
-                  <DialogDescription>Scannen Sie den QR-Code oder kopieren Sie den Link.</DialogDescription>
-                </DialogHeader>
-                <div className="flex flex-col items-center gap-4 py-4">
-                  <div className="bg-white p-4 rounded-xl border-2"><QRCodeSVG value={surveyUrl} size={220} /></div>
-                  <div className="flex gap-2 w-full">
-                    <input type="text" value={surveyUrl} readOnly className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50" />
-                    <Button onClick={copyToClipboard} size="icon"><Share2 className="w-4 h-4" /></Button>
+          <div className="flex gap-2 flex-wrap">
+            <Button onClick={exportToPDF} disabled={exporting} variant="outline">
+              <Download className="w-5 h-5 mr-2" />
+              {exporting ? 'Erstelle PDF...' : 'PDF exportieren'}
+            </Button>
+            <Button onClick={exportToCSV} variant="outline">
+              <Download className="w-5 h-5 mr-2" />
+              CSV exportieren
+            </Button>
+
+            {isPublished ? (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button className="bg-blue-600 hover:bg-blue-700">
+                    <QrCode className="w-5 h-5 mr-2" />QR-Code / Teilen
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Umfrage teilen</DialogTitle>
+                    <DialogDescription>Scannen Sie den QR-Code oder kopieren Sie den Link.</DialogDescription>
+                  </DialogHeader>
+                  <div className="flex flex-col items-center gap-4 py-4">
+                    <div className="bg-white p-4 rounded-xl border-2" id="qr-code-results-container">
+                      <QRCodeSVG value={surveyUrl} size={220} />
+                    </div>
+                    <div className="flex gap-2 w-full">
+                      <input type="text" value={surveyUrl} readOnly className="flex-1 px-3 py-2 border rounded-md text-sm bg-gray-50" />
+                      <Button onClick={copyToClipboard} size="icon"><Share2 className="w-4 h-4" /></Button>
+                    </div>
+                    <Button variant="outline" className="w-full" onClick={downloadQrCode}>
+                      <Download className="w-4 h-4 mr-2" />
+                      QR-Code als PNG herunterladen
+                    </Button>
                   </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          ) : (
-            <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
-              <Lock className="w-4 h-4 flex-shrink-0" />
-              Teilen erst nach Produktivschaltung möglich
-            </div>
-          )}
+                </DialogContent>
+              </Dialog>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+                <Lock className="w-4 h-4 flex-shrink-0" />
+                Teilen erst nach Produktivschaltung möglich
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Category filter */}

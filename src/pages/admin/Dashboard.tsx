@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy,
-  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck, CalendarClock, CalendarX2, ScanEye,
+  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck, CalendarClock, CalendarX2, ScanEye, Download,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -22,21 +22,9 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { decodeDescriptionWithMeta, encodeDescriptionWithMeta } from '@/utils/surveyMeta';
 import { QRCodeSVG } from 'qrcode.react';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeSurvey(s: any): Survey {
-  const decoded = decodeDescriptionWithMeta(s.description);
-  return {
-    ...s,
-    description: decoded.description,
-    max_votes: s.max_votes ?? decoded.meta.max_votes ?? null,
-    expires_at: s.expires_at ?? decoded.meta.expires_at ?? null,
-    status: s.status ?? 'draft',
-  } as Survey;
-}
 
 function formatTimestamp(iso: string | null | undefined): string {
   if (!iso) return '–';
@@ -76,6 +64,7 @@ const Dashboard = () => {
   const [duplicateTitle, setDuplicateTitle] = useState('');
   const [duplicating, setDuplicating] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareSurveyTitle, setShareSurveyTitle] = useState<string>('');
 
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
@@ -104,11 +93,10 @@ const Dashboard = () => {
     try {
       const { data, error } = await supabase.from('surveys').select('*').order('created_at', { ascending: false });
       if (error) throw error;
-      const normalized = (data || []).map(normalizeSurvey);
-      setSurveys(normalized);
+      setSurveys(data || []);
 
-      const publishedSurveys = normalized.filter((s) => s.status === 'published');
-      if (publishedSurveys.length > 0) loadResponseCounts(publishedSurveys.map((s) => s.id));
+      const publishedSurveys = (data || []).filter((s: Survey) => s.status === 'published');
+      if (publishedSurveys.length > 0) loadResponseCounts(publishedSurveys.map((s: Survey) => s.id));
     } catch { toast.error('Fehler beim Laden der Umfragen'); }
     finally { setLoading(false); }
   };
@@ -179,17 +167,13 @@ const Dashboard = () => {
     setPublishing(true);
     try {
       const now = new Date().toISOString();
-      const descriptionWithMeta = encodeDescriptionWithMeta(publishSurvey.description ?? '', {
-        max_votes: publishSurvey.max_votes ?? null,
-        expires_at: publishSurvey.expires_at ?? null,
-      });
 
       // 1. Neue Kopie als "published" anlegen
       const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
           title: publishSurvey.title,
-          description: descriptionWithMeta,
+          description: publishSurvey.description,
           created_by: user.id,
           is_active: true,
           status: 'published',
@@ -216,6 +200,7 @@ const Dashboard = () => {
             question_text: q.question_text,
             question_type: q.question_type,
             order_index: q.order_index,
+            max_text_answers: (q as any).max_text_answers ?? null,
           })
           .select('*').single();
         if (iqErr) throw iqErr;
@@ -252,14 +237,17 @@ const Dashboard = () => {
 
     setDuplicating(true);
     try {
-      const descriptionWithMeta = encodeDescriptionWithMeta(duplicateSurvey.description ?? '', {
-        max_votes: duplicateSurvey.max_votes ?? null,
-        expires_at: duplicateSurvey.expires_at ?? null,
-      });
-
       const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
-        .insert({ title, description: descriptionWithMeta, created_by: user.id, is_active: false, status: 'draft' })
+        .insert({
+          title,
+          description: duplicateSurvey.description,
+          created_by: user.id,
+          is_active: false,
+          status: 'draft',
+          max_votes: duplicateSurvey.max_votes ?? null,
+          expires_at: duplicateSurvey.expires_at ?? null,
+        })
         .select('*').single();
       if (surveyError) throw surveyError;
 
@@ -273,7 +261,13 @@ const Dashboard = () => {
       for (const q of oldQuestions) {
         const { data: iq, error: iqErr } = await supabase
           .from('questions')
-          .insert({ survey_id: newSurvey.id, question_text: q.question_text, question_type: q.question_type, order_index: q.order_index })
+          .insert({
+            survey_id: newSurvey.id,
+            question_text: q.question_text,
+            question_type: q.question_type,
+            order_index: q.order_index,
+            max_text_answers: (q as any).max_text_answers ?? null,
+          })
           .select('*').single();
         if (iqErr) throw iqErr;
         qIdMap.set(q.id, iq.id);
@@ -301,6 +295,36 @@ const Dashboard = () => {
       loadSurveys();
     } catch (e) { console.error(e); toast.error('Fehler beim Duplizieren'); }
     finally { setDuplicating(false); }
+  };
+
+  const openShareDialog = (survey: Survey) => {
+    setShareUrl(`${window.location.origin}/survey/${survey.id}`);
+    setShareSurveyTitle(survey.title);
+  };
+
+  const downloadQrCode = (containerId: string, title: string) => {
+    const svg = document.querySelector(`#${containerId} svg`);
+    if (!svg) return;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx?.drawImage(img, 0, 0);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `QR_${title.replace(/[^a-z0-9]/gi, '_')}.png`;
+        link.click();
+        URL.revokeObjectURL(url);
+        toast.success('QR-Code heruntergeladen!');
+      });
+    };
+    img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
   };
 
   // ── render ───────────────────────────────────────────────────────────────────
@@ -431,7 +455,7 @@ const Dashboard = () => {
               <ScanEye className="w-4 h-4" />
             </Button>
             <Button
-              onClick={() => setShareUrl(url)}
+              onClick={() => openShareDialog(survey)}
               variant="outline" size="icon" title="Teilen / QR-Code"
               className="border-green-300 hover:bg-green-50"
             >
@@ -693,14 +717,14 @@ const Dashboard = () => {
       </Dialog>
 
       {/* Share / QR dialog */}
-      <Dialog open={!!shareUrl} onOpenChange={() => setShareUrl(null)}>
+      <Dialog open={!!shareUrl} onOpenChange={() => { setShareUrl(null); setShareSurveyTitle(''); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Umfrage teilen</DialogTitle>
             <DialogDescription>Scannen Sie den QR-Code oder kopieren Sie den Link.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col items-center gap-4 py-2">
-            <div className="bg-white p-4 rounded-xl border-2">
+            <div className="bg-white p-4 rounded-xl border-2" id="dashboard-qr-container">
               {shareUrl && <QRCodeSVG value={shareUrl} size={220} />}
             </div>
             <div className="flex gap-2 w-full">
@@ -717,6 +741,14 @@ const Dashboard = () => {
                 <Share2 className="w-4 h-4" />
               </Button>
             </div>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => downloadQrCode('dashboard-qr-container', shareSurveyTitle)}
+            >
+              <Download className="w-4 h-4 mr-2" />
+              QR-Code als PNG herunterladen
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
