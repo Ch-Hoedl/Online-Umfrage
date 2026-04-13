@@ -38,14 +38,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('[AuthContext] Error loading profile:', error);
         throw error;
       }
-      console.log('[AuthContext] Profile loaded:', data);
+      console.log('[AuthContext] Profile loaded successfully:', {
+        id: data.id,
+        email: data.email,
+        role: data.role,
+        approved: data.approved,
+        first_name: data.first_name,
+        last_name: data.last_name
+      });
       setProfile(data as Profile);
       
       // Update last_login_at
-      await supabase
+      console.log('[AuthContext] Updating last_login_at');
+      const { error: updateError } = await supabase
         .from('profiles')
         .update({ last_login_at: new Date().toISOString() })
         .eq('id', userId);
+      if (updateError) {
+        console.error('[AuthContext] Error updating last_login_at:', updateError);
+      }
     } catch (err) {
       console.error('[AuthContext] Failed to load profile:', err);
       setProfile(null);

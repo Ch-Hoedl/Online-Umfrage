@@ -25,8 +25,29 @@ const Login = () => {
   const [signUpPassword, setSignUpPassword] = useState('');
 
   useEffect(() => {
-    if (user && profile?.approved) {
-      navigate('/admin');
+    console.log('[Login] useEffect - user:', user?.email, 'profile:', profile, 'approved:', profile?.approved, 'loading:', loading);
+    
+    if (user && profile) {
+      if (profile.approved) {
+        console.log('[Login] User approved, navigating to /admin');
+        navigate('/admin');
+      } else {
+        console.log('[Login] User not approved, showing pending message');
+        setLoading(false);
+      }
+    } else if (user && !profile) {
+      console.log('[Login] User exists but profile not loaded yet, waiting...');
+      // Set a timeout to prevent infinite loading
+      const timeout = setTimeout(() => {
+        console.error('[Login] Profile loading timeout - forcing loading state to false');
+        setLoading(false);
+        toast.error('Fehler beim Laden des Profils. Bitte versuchen Sie es erneut.');
+      }, 5000); // 5 seconds timeout
+      
+      return () => clearTimeout(timeout);
+    } else {
+      console.log('[Login] No user, resetting loading state');
+      setLoading(false);
     }
   }, [user, profile, navigate]);
 
@@ -39,19 +60,25 @@ const Login = () => {
     
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      console.log('[Login] Attempting login for:', email);
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
       
-      if (error) throw error;
+      if (error) {
+        console.error('[Login] Auth error:', error);
+        throw error;
+      }
+      
+      console.log('[Login] Login successful, user:', data.user?.email);
       // Navigation happens via useEffect when profile loads
     } catch (error: any) {
-      console.error('Login error:', error);
+      console.error('[Login] Login error:', error);
       toast.error(error.message || 'Fehler beim Anmelden');
-    } finally {
       setLoading(false);
     }
+    // Don't set loading to false here - let useEffect handle it
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
