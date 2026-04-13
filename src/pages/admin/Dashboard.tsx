@@ -496,21 +496,24 @@ const Dashboard = () => {
   const SurveyCardPublic = ({ survey }: { survey: Survey }) => {
     const canEdit = survey.allow_edit;
     const canCopy = survey.allow_copy;
+    const isCollaborative = canEdit; // Collaborative if editing is allowed
     
     return (
-      <Card className="hover:shadow-lg transition-all border-2 border-purple-200 bg-purple-50/30">
+      <Card className={`hover:shadow-lg transition-all border-2 ${isCollaborative ? 'border-green-200 bg-green-50/30' : 'border-purple-200 bg-purple-50/30'}`}>
         <CardHeader>
           <div className="flex justify-between items-start gap-2">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1">
-                <Users className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                <Users className={`w-4 h-4 flex-shrink-0 ${isCollaborative ? 'text-green-600' : 'text-purple-600'}`} />
                 <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
               </div>
               <CardDescription className="line-clamp-2">
                 {survey.description || 'Keine Beschreibung'}
               </CardDescription>
             </div>
-            <Badge className="bg-purple-100 text-purple-700 border-purple-300 flex-shrink-0">Öffentlich</Badge>
+            <Badge className={isCollaborative ? 'bg-green-100 text-green-700 border-green-300 flex-shrink-0' : 'bg-purple-100 text-purple-700 border-purple-300 flex-shrink-0'}>
+              {isCollaborative ? 'Kollaborativ' : 'Öffentlich'}
+            </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -518,28 +521,42 @@ const Dashboard = () => {
             <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
             <span>Erstellt von anderem Benutzer</span>
           </div>
-          <div className="flex gap-2">
-            {canEdit && (
-              <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-purple-300 hover:bg-purple-50">
-                <Edit className="w-4 h-4 mr-2" />Bearbeiten
-              </Button>
-            )}
+          {isCollaborative && (
+            <div className="flex items-start gap-2 text-xs text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              <Users className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <span>Diese Vorlage kann von allen Benutzern gemeinsam bearbeitet werden</span>
+            </div>
+          )}
+          {!isCollaborative && canCopy && (
+            <div className="flex items-start gap-2 text-xs text-purple-800 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">
+              <Copy className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <span>Sie können eine private Kopie erstellen und diese bearbeiten</span>
+            </div>
+          )}
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-2">
+              {canEdit && (
+                <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className={`flex-1 ${isCollaborative ? 'border-green-300 hover:bg-green-50' : 'border-purple-300 hover:bg-purple-50'}`}>
+                  <Edit className="w-4 h-4 mr-2" />Bearbeiten
+                </Button>
+              )}
+              {canCopy && (
+                <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" className={canEdit ? '' : 'flex-1'}>
+                  <Copy className="w-4 h-4 mr-2" />Kopie erstellen
+                </Button>
+              )}
+              {!canEdit && !canCopy && (
+                <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-purple-300 hover:bg-purple-50">
+                  <Eye className="w-4 h-4 mr-2" />Ansehen
+                </Button>
+              )}
+            </div>
             {canCopy && (
-              <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" className={canEdit ? '' : 'flex-1'}>
-                <Copy className="w-4 h-4 mr-2" />Kopieren
-              </Button>
-            )}
-            {!canEdit && !canCopy && (
-              <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-purple-300 hover:bg-purple-50">
-                <Eye className="w-4 h-4 mr-2" />Ansehen
+              <Button onClick={() => setPublishSurvey(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
+                <Rocket className="w-4 h-4 mr-2" />Produktiv schalten
               </Button>
             )}
           </div>
-          {canCopy && (
-            <Button onClick={() => setPublishSurvey(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
-              <Rocket className="w-4 h-4 mr-2" />Produktiv schalten
-            </Button>
-          )}
         </CardContent>
       </Card>
     );
@@ -765,8 +782,20 @@ const Dashboard = () => {
       <Dialog open={!!duplicateSurvey} onOpenChange={(open) => { if (!open && !duplicating) { setDuplicateSurvey(null); setDuplicateTitle(''); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Als neue Vorlage duplizieren</DialogTitle>
-            <DialogDescription>Fragen und Antwortoptionen werden kopiert. Antworten werden nicht übernommen.</DialogDescription>
+            <DialogTitle className="flex items-center gap-2">
+              <Copy className="w-5 h-5 text-blue-600" />
+              Kopie erstellen
+            </DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-2 text-sm">
+                <p>Erstellen Sie eine private Kopie dieser Vorlage in Ihren eigenen Vorlagen.</p>
+                <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-blue-800">
+                  ✅ Alle Fragen und Antwortoptionen werden kopiert<br/>
+                  ✅ Die Kopie wird in "Meine Vorlagen" gespeichert<br/>
+                  ✅ Sie können die Kopie frei bearbeiten
+                </div>
+              </div>
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
             <Label htmlFor="dup-title">Name der neuen Vorlage</Label>
@@ -775,7 +804,8 @@ const Dashboard = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => { setDuplicateSurvey(null); setDuplicateTitle(''); }} disabled={duplicating}>Abbrechen</Button>
             <Button onClick={handleDuplicate} disabled={duplicating} className="bg-blue-600 hover:bg-blue-700">
-              {duplicating ? 'Dupliziere…' : 'Duplizieren'}
+              <Copy className="w-4 h-4 mr-2" />
+              {duplicating ? 'Erstelle Kopie…' : 'Kopie erstellen'}
             </Button>
           </DialogFooter>
         </DialogContent>
