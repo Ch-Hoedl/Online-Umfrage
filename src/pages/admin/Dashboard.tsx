@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Survey, Profile } from '@/integrations/supabase/types';
+import { Survey, Profile, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users } from 'lucide-react';
+import { Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import {
@@ -17,12 +17,28 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { decodeDescriptionWithMeta, encodeDescriptionWithMeta } from '@/utils/surveyMeta';
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
+
+  const [duplicateSurvey, setDuplicateSurvey] = useState<Survey | null>(null);
+  const [duplicateTitle, setDuplicateTitle] = useState('');
+  const [duplicating, setDuplicating] = useState(false);
+
   const navigate = useNavigate();
   const { signOut, user } = useAuth();
 
@@ -61,7 +77,18 @@ const Dashboard = () => {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setSurveys(data || []);
+
+      const normalized = (data || []).map((s: any) => {
+        const decoded = decodeDescriptionWithMeta(s.description);
+        return {
+          ...s,
+          description: decoded.description,
+          max_votes: s.max_votes ?? decoded.meta.max_votes ?? null,
+          expires_at: s.expires_at ?? decoded.meta.expires_at ?? null,
+        } as Survey;
+      });
+
+      setSurveys(normalized);
     } catch (error) {
       toast.error('Fehler beim Laden der Umfragen');
     } finally {
@@ -79,13 +106,129 @@ const Dashboard = () => {
         .eq('id', deleteId);
 
       if (error) throw error;
-      
+
       toast.success('Umfrage gelöscht');
       loadSurveys();
     } catch (error) {
       toast.error('Fehler beim Löschen der Umfrage');
     } finally {
       setDeleteId(null);
+    }
+  };
+
+  const suggestedDuplicateTitle = useMemo(() => {
+    if (!duplicateSurvey) return '';
+    return `${duplicateSurvey.title} (Kopie)`;
+  }, [duplicateSurvey]);
+
+  const openDuplicateDialog = (survey: Survey) => {
+    setDuplicateSurvey(survey);
+    setDuplicateTitle(`${survey.title} (Kopie)`);
+  };
+
+  const closeDuplicateDialog = () => {
+    if (duplicating) return;
+    setDuplicateSurvey(null);
+    setDuplicateTitle('');
+  };
+
+  const handleDuplicate = async () => {
+    if (!duplicateSurvey) return;
+    if (!user?.id) {
+      toast.error('Nicht angemeldet');
+      return;
+    }
+
+    const title = duplicateTitle.trim();
+    if (!title) {
+      toast.error('Bitte geben Sie einen Namen für die Kopie ein');
+      return;
+    }
+
+    setDuplicating(true);
+
+    try {
+      const descriptionWithMeta = encodeDescriptionWithMeta(duplicateSurvey.description, {
+        max_votes: duplicateSurvey.max_votes ?? null,
+        expires_at: duplicateSurvey.expires_at ?? null,
+      });
+
+      // 1) Survey kopieren
+      const { data: newSurvey, error: surveyError } = await supabase
+        .from('surveys')
+        .insert({
+          title,
+          description: descriptionWithMeta,
+          created_by: user.id,
+          is_active: duplicateSurvey.is_active,
+        })
+        .select('*')
+        .single();
+
+      if (surveyError) throw surveyError;
+
+      // 2) Fragen laden und kopieren
+      const { data: questions, error: questionsError } = await supabase
+        .from('questions')
+        .select('*')
+        .eq('survey_id', duplicateSurvey.id)
+        .order('order_index');
+
+      if (questionsError) throw questionsError;
+
+      const oldQuestions = (questions || []) as Question[];
+      const questionIdMap = new Map<string, string>();
+
+      for (const q of oldQuestions) {
+        const { data: insertedQuestion, error: insertQError } = await supabase
+          .from('questions')
+          .insert({
+            survey_id: newSurvey.id,
+            question_text: q.question_text,
+            question_type: (q.question_type === 'text' ? 'multiple' : q.question_type) as any,
+            order_index: q.order_index,
+          })
+          .select('*')
+          .single();
+
+        if (insertQError) throw insertQError;
+        questionIdMap.set(q.id, insertedQuestion.id);
+      }
+
+      // 3) Optionen laden und kopieren
+      const oldQuestionIds = oldQuestions.map((q) => q.id);
+      if (oldQuestionIds.length > 0) {
+        const { data: options, error: optionsError } = await supabase
+          .from('options')
+          .select('*')
+          .in('question_id', oldQuestionIds)
+          .order('order_index');
+
+        if (optionsError) throw optionsError;
+
+        const optionInserts = (options || []).map((opt: Option) => ({
+          question_id: questionIdMap.get(opt.question_id)!,
+          option_text: opt.option_text,
+          order_index: opt.order_index,
+        }));
+
+        if (optionInserts.length > 0) {
+          const { error: insertOptionsError } = await supabase
+            .from('options')
+            .insert(optionInserts);
+
+          if (insertOptionsError) throw insertOptionsError;
+        }
+      }
+
+      toast.success('Umfrage dupliziert');
+      closeDuplicateDialog();
+      loadSurveys();
+    } catch (error) {
+      console.error(error);
+      toast.error('Fehler beim Duplizieren der Umfrage');
+    } finally {
+      setDuplicating(false);
     }
   };
 
@@ -153,8 +296,8 @@ const Dashboard = () => {
                       </CardDescription>
                     </div>
                     <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                      survey.is_active 
-                        ? 'bg-green-100 text-green-700' 
+                      survey.is_active
+                        ? 'bg-green-100 text-green-700'
                         : 'bg-gray-100 text-gray-700'
                     }`}>
                       {survey.is_active ? 'Aktiv' : 'Inaktiv'}
@@ -163,26 +306,36 @@ const Dashboard = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="flex gap-2">
-                    <Button 
+                    <Button
                       onClick={() => navigate(`/admin/results/${survey.id}`)}
-                      variant="outline" 
+                      variant="outline"
                       className="flex-1"
                     >
                       <Eye className="w-4 h-4 mr-2" />
                       Ergebnisse
                     </Button>
-                    <Button 
+                    <Button
+                      onClick={() => openDuplicateDialog(survey)}
+                      variant="outline"
+                      size="icon"
+                      title="Duplizieren"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </Button>
+                    <Button
                       onClick={() => navigate(`/admin/edit/${survey.id}`)}
                       variant="outline"
                       size="icon"
+                      title="Bearbeiten"
                     >
                       <Edit className="w-4 h-4" />
                     </Button>
-                    <Button 
+                    <Button
                       onClick={() => setDeleteId(survey.id)}
                       variant="outline"
                       size="icon"
                       className="text-red-600 hover:text-red-700"
+                      title="Löschen"
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -210,6 +363,37 @@ const Dashboard = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={!!duplicateSurvey} onOpenChange={(open) => !open && closeDuplicateDialog()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Umfrage duplizieren</DialogTitle>
+            <DialogDescription>
+              Die Fragen und Antwortoptionen werden 1:1 kopiert. Ergebnisse/Antworten werden nicht übernommen.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <Label htmlFor="duplicate-title">Neuer Name</Label>
+            <Input
+              id="duplicate-title"
+              value={duplicateTitle}
+              onChange={(e) => setDuplicateTitle(e.target.value)}
+              placeholder={suggestedDuplicateTitle || 'z.B. Mitarbeiterumfrage (Kopie)'}
+              autoFocus
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDuplicateDialog} disabled={duplicating}>
+              Abbrechen
+            </Button>
+            <Button onClick={handleDuplicate} disabled={duplicating} className="bg-blue-600 hover:bg-blue-700">
+              {duplicating ? 'Dupliziere…' : 'Duplizieren'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

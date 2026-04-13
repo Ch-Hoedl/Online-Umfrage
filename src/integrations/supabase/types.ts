@@ -4,6 +4,8 @@ export interface Survey {
   description: string | null;
   created_by: string;
   is_active: boolean;
+  max_votes?: number | null;
+  expires_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -12,7 +14,7 @@ export interface Question {
   id: string;
   survey_id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating' | 'open';
+  question_type: 'single' | 'multiple' | 'rating' | 'text';
   order_index: number;
   expected_responses?: number;
   created_at: string;

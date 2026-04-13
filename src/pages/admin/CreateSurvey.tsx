@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Profile } from '@/integrations/supabase/types';
+import { Profile, Question } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,18 +11,28 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Plus, Trash2, ArrowLeft, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
+import { encodeDescriptionWithMeta } from '@/utils/surveyMeta';
+
+const META_PREFIX = '__dyad_meta__:';
+
+function buildTextMetaOption(maxAnswers: number) {
+  return `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
+}
 
 interface QuestionData {
   id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating' | 'open';
-  expected_responses?: number;
+  question_type: Question['question_type'];
   options: { id: string; text: string }[];
+  text_max_answers: number;
 }
 
 const CreateSurvey = () => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [maxVotes, setMaxVotes] = useState('');
+  const [expiresAtLocal, setExpiresAtLocal] = useState('');
+
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
@@ -63,7 +73,7 @@ const CreateSurvey = () => {
         id: crypto.randomUUID(),
         question_text: '',
         question_type: 'single',
-        expected_responses: 1,
+        text_max_answers: 3,
         options: [
           { id: crypto.randomUUID(), text: '' },
           { id: crypto.randomUUID(), text: '' },
@@ -78,9 +88,15 @@ const CreateSurvey = () => {
 
   const updateQuestion = (questionId: string, field: string, value: any) => {
     setQuestions(
-      questions.map((q) =>
-        q.id === questionId ? { ...q, [field]: value } : q
-      )
+      questions.map((q) => {
+        if (q.id !== questionId) return q;
+
+        const next = { ...q, [field]: value } as QuestionData;
+        if (field === 'question_type' && value === 'text' && !next.text_max_answers) {
+          next.text_max_answers = 3;
+        }
+        return next;
+      })
     );
   };
 
@@ -125,6 +141,30 @@ const CreateSurvey = () => {
       return;
     }
 
+    if (!expiresAtLocal.trim()) {
+      toast.error('Bitte geben Sie ein Ablaufdatum an');
+      return;
+    }
+
+    const expiresAtDate = new Date(expiresAtLocal);
+    if (Number.isNaN(expiresAtDate.getTime())) {
+      toast.error('Bitte geben Sie ein gültiges Ablaufdatum an');
+      return;
+    }
+
+    if (expiresAtDate.getTime() <= Date.now()) {
+      toast.error('Das Ablaufdatum muss in der Zukunft liegen');
+      return;
+    }
+
+    const expiresAt = expiresAtDate.toISOString();
+
+    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
+    if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
+      toast.error('Das Stimmen-Limit muss eine Zahl größer/gleich 1 sein');
+      return;
+    }
+
     if (questions.length === 0) {
       toast.error('Bitte fügen Sie mindestens eine Frage hinzu');
       return;
@@ -135,7 +175,20 @@ const CreateSurvey = () => {
         toast.error('Alle Fragen müssen einen Text haben');
         return;
       }
-      if (question.question_type !== 'rating' && question.question_type !== 'open' && question.options.some((o) => !o.text.trim())) {
+
+      if (question.question_type === 'text') {
+        const maxAnswers = Number(question.text_max_answers);
+        if (!Number.isFinite(maxAnswers) || maxAnswers < 1 || maxAnswers > 10) {
+          toast.error('Bei offenen Fragen muss „Max. Antworten" zwischen 1 und 10 liegen');
+          return;
+        }
+      }
+
+      if (
+        question.question_type !== 'rating' &&
+        question.question_type !== 'text' &&
+        question.options.some((o) => !o.text.trim())
+      ) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein');
         return;
       }
@@ -144,11 +197,16 @@ const CreateSurvey = () => {
     setSaving(true);
 
     try {
+      const descriptionWithMeta = encodeDescriptionWithMeta(description, {
+        max_votes: parsedMaxVotes,
+        expires_at: expiresAt,
+      });
+
       const { data: survey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
           title,
-          description,
+          description: descriptionWithMeta,
           created_by: user?.id,
         })
         .select()
@@ -158,14 +216,16 @@ const CreateSurvey = () => {
 
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
+        const dbQuestionType: string =
+          question.question_type === 'text' ? 'multiple' : question.question_type;
+
         const { data: questionData, error: questionError } = await supabase
           .from('questions')
           .insert({
             survey_id: survey.id,
             question_text: question.question_text,
-            question_type: question.question_type,
+            question_type: dbQuestionType,
             order_index: i,
-            expected_responses: question.question_type === 'open' ? question.expected_responses : null,
           })
           .select()
           .single();
@@ -184,7 +244,18 @@ const CreateSurvey = () => {
 
             if (optionError) throw optionError;
           }
-        } else if (question.question_type !== 'open') {
+        } else if (question.question_type === 'text') {
+          const maxAnswers = Number(question.text_max_answers);
+          const { error: metaOptionError } = await supabase
+            .from('options')
+            .insert({
+              question_id: questionData.id,
+              option_text: buildTextMetaOption(maxAnswers),
+              order_index: 9999,
+            });
+
+          if (metaOptionError) throw metaOptionError;
+        } else {
           for (let j = 0; j < question.options.length; j++) {
             const { error: optionError } = await supabase
               .from('options')
@@ -246,6 +317,29 @@ const CreateSurvey = () => {
                 rows={3}
               />
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="maxVotes">Stimmen-Limit (optional)</Label>
+                <Input
+                  id="maxVotes"
+                  type="number"
+                  min={1}
+                  value={maxVotes}
+                  onChange={(e) => setMaxVotes(e.target.value)}
+                  placeholder="z.B. 100"
+                />
+              </div>
+              <div>
+                <Label htmlFor="expiresAt">Ablaufdatum *</Label>
+                <Input
+                  id="expiresAt"
+                  type="datetime-local"
+                  value={expiresAtLocal}
+                  onChange={(e) => setExpiresAtLocal(e.target.value)}
+                />
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -292,31 +386,37 @@ const CreateSurvey = () => {
                       <SelectItem value="single">Einfachauswahl</SelectItem>
                       <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
                       <SelectItem value="rating">Bewertung (1-5)</SelectItem>
-                      <SelectItem value="open">Offene Frage</SelectItem>
+                      <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
-                {question.question_type === 'open' && (
-                  <div>
-                    <Label>Anzahl erwarteter Antworten</Label>
-                    <Input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={question.expected_responses || 1}
-                      onChange={(e) =>
-                        updateQuestion(question.id, 'expected_responses', parseInt(e.target.value) || 1)
-                      }
-                      placeholder="z.B. 3 für drei Begriffe"
-                    />
-                    <p className="text-sm text-gray-500 mt-1">
-                      Wie viele Eingabefelder sollen angezeigt werden?
-                    </p>
+                {question.question_type === 'text' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label>Max. Antworten</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={question.text_max_answers}
+                        onChange={(e) =>
+                          updateQuestion(
+                            question.id,
+                            'text_max_answers',
+                            Number.parseInt(e.target.value || '1', 10)
+                          )
+                        }
+                        placeholder="z.B. 3"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Teilnehmer können bis zu so viele Begriffe eingeben.
+                      </p>
+                    </div>
                   </div>
                 )}
 
-                {question.question_type !== 'rating' && question.question_type !== 'open' && (
+                {question.question_type !== 'rating' && question.question_type !== 'text' && (
                   <div>
                     <Label>Antwortmöglichkeiten *</Label>
                     <div className="space-y-2 mt-2">
@@ -351,6 +451,12 @@ const CreateSurvey = () => {
                       </Button>
                     </div>
                   </div>
+                )}
+
+                {question.question_type === 'rating' && (
+                  <p className="text-sm text-gray-600">
+                    Für Bewertungen werden automatisch die Optionen 1–5 angelegt.
+                  </p>
                 )}
               </CardContent>
             </Card>

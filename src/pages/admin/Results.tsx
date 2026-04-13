@@ -7,11 +7,30 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, QrCode, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
+const META_PREFIX = '__dyad_meta__:';
+
+function isMetaOption(optionText: string) {
+  return optionText.startsWith(META_PREFIX);
+}
 
 const Results = () => {
   const { id } = useParams();
@@ -79,7 +98,7 @@ const Results = () => {
   };
 
   const getChartData = (questionId: string) => {
-    const questionOptions = options[questionId] || [];
+    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
     const questionResponses = responses.filter((r) => r.question_id === questionId);
 
     return questionOptions.map((option) => ({
@@ -88,10 +107,28 @@ const Results = () => {
     }));
   };
 
-  const getTextResponses = (questionId: string) => {
-    return responses
-      .filter((r) => r.question_id === questionId && r.text_response)
-      .map((r) => r.text_response);
+  const isTextQuestion = (questionId: string) => {
+    return (options[questionId] || []).some((o) => isMetaOption(o.option_text));
+  };
+
+  const getWordCloud = (questionId: string) => {
+    const questionResponses = responses.filter((r) => r.question_id === questionId);
+    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
+
+    const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
+    const counts = new Map<string, number>();
+
+    for (const r of questionResponses) {
+      const text = idToText.get(r.option_id ?? '');
+      if (!text) continue;
+      counts.set(text, (counts.get(text) || 0) + 1);
+    }
+
+    const items = Array.from(counts.entries())
+      .map(([text, count]) => ({ text, count }))
+      .sort((a, b) => b.count - a.count);
+
+    return items;
   };
 
   const copyToClipboard = () => {
@@ -129,9 +166,7 @@ const Results = () => {
           </Button>
           <div className="flex-1">
             <h1 className="text-3xl font-bold text-gray-900">{survey.title}</h1>
-            <p className="text-gray-600">
-              {totalResponses} {totalResponses === 1 ? 'Teilnehmer' : 'Teilnehmer'}
-            </p>
+            <p className="text-gray-600">{totalResponses} Teilnehmer</p>
           </div>
           <Dialog>
             <DialogTrigger asChild>
@@ -168,85 +203,103 @@ const Results = () => {
 
         <div className="space-y-6">
           {questions.map((question) => {
+            if (isTextQuestion(question.id)) {
+              const cloud = getWordCloud(question.id);
+              const max = Math.max(1, ...cloud.map((c) => c.count));
+
+              return (
+                <Card key={question.id}>
+                  <CardHeader>
+                    <CardTitle>{question.question_text}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {cloud.length === 0 ? (
+                      <p className="text-sm text-gray-600">Noch keine Antworten.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {cloud.map((item) => {
+                          const size = 12 + Math.round((item.count / max) * 22);
+                          return (
+                            <span
+                              key={item.text}
+                              className="px-3 py-1 rounded-full bg-white border text-gray-900"
+                              style={{ fontSize: `${size}px` }}
+                              title={`${item.count}×`}
+                            >
+                              {item.text}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            }
+
             const chartData = getChartData(question.id);
-            const textResponses = getTextResponses(question.id);
-            
+
             return (
               <Card key={question.id}>
                 <CardHeader>
                   <CardTitle>{question.question_text}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {question.question_type === 'open' ? (
-                    <div className="space-y-2">
-                      <p className="text-sm text-gray-600 mb-4">
-                        {textResponses.length} {textResponses.length === 1 ? 'Antwort' : 'Antworten'}
-                      </p>
-                      <div className="space-y-2 max-h-96 overflow-y-auto">
-                        {textResponses.map((response, index) => (
-                          <div key={index} className="p-3 bg-gray-50 rounded-lg border">
-                            <p className="text-gray-900">{response}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <Tabs defaultValue="bar" className="w-full">
-                      <TabsList className="grid w-full grid-cols-3">
-                        <TabsTrigger value="bar">Balkendiagramm</TabsTrigger>
-                        <TabsTrigger value="line">Liniendiagramm</TabsTrigger>
-                        <TabsTrigger value="pie">Kreisdiagramm</TabsTrigger>
-                      </TabsList>
-                      
-                      <TabsContent value="bar" className="mt-6">
-                        <ResponsiveContainer width="100%" height={300}>
-                          <BarChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="name" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Bar dataKey="value" fill="#3b82f6" name="Antworten" />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </TabsContent>
-                      
-                      <TabsContent value="line" className="mt-6">
-                        <ResponsiveContainer width="100%" height={300}>
-                          <LineChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="name" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Line type="monotone" dataKey="value" stroke="#3b82f6" name="Antworten" strokeWidth={2} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </TabsContent>
-                      
-                      <TabsContent value="pie" className="mt-6">
-                        <ResponsiveContainer width="100%" height={300}>
-                          <PieChart>
-                            <Pie
-                              data={chartData}
-                              cx="50%"
-                              cy="50%"
-                              labelLine={false}
-                              label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                              outerRadius={100}
-                              fill="#8884d8"
-                              dataKey="value"
-                            >
-                              {chartData.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </TabsContent>
-                    </Tabs>
-                  )}
+                  <Tabs defaultValue="bar" className="w-full">
+                    <TabsList className="grid w-full grid-cols-3">
+                      <TabsTrigger value="bar">Balkendiagramm</TabsTrigger>
+                      <TabsTrigger value="line">Liniendiagramm</TabsTrigger>
+                      <TabsTrigger value="pie">Kreisdiagramm</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="bar" className="mt-6">
+                      <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="name" />
+                          <YAxis />
+                          <Tooltip />
+                          <Legend />
+                          <Bar dataKey="value" fill="#3b82f6" name="Antworten" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </TabsContent>
+
+                    <TabsContent value="line" className="mt-6">
+                      <ResponsiveContainer width="100%" height={300}>
+                        <LineChart data={chartData}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="name" />
+                          <YAxis />
+                          <Tooltip />
+                          <Legend />
+                          <Line type="monotone" dataKey="value" stroke="#3b82f6" name="Antworten" strokeWidth={2} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </TabsContent>
+
+                    <TabsContent value="pie" className="mt-6">
+                      <ResponsiveContainer width="100%" height={300}>
+                        <PieChart>
+                          <Pie
+                            data={chartData}
+                            cx="50%"
+                            cy="50%"
+                            labelLine={false}
+                            label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                            outerRadius={100}
+                            fill="#8884d8"
+                            dataKey="value"
+                          >
+                            {chartData.map((_, index) => (
+                              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </TabsContent>
+                  </Tabs>
                 </CardContent>
               </Card>
             );
