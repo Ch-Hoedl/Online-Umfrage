@@ -5,8 +5,9 @@ import { Survey, Question, Option, Response } from '@/integrations/supabase/type
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, QrCode, Share2, Lock, MessageSquare } from 'lucide-react';
+import { ArrowLeft, QrCode, Share2, Lock, MessageSquare, Tag, Filter } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -18,19 +19,14 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
 const META_PREFIX = '__dyad_meta__:';
 
-function isMetaOption(optionText: string) {
-  return optionText.startsWith(META_PREFIX);
+function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
+function parseMeta(t: string) {
+  if (!isMetaOption(t)) return null;
+  try { return JSON.parse(t.slice(META_PREFIX.length)); } catch { return null; }
 }
-function isCommentMetaOption(optionText: string): boolean {
-  if (!isMetaOption(optionText)) return false;
-  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'comment'; }
-  catch { return false; }
-}
-function isTextMetaOption(optionText: string): boolean {
-  if (!isMetaOption(optionText)) return false;
-  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'text'; }
-  catch { return false; }
-}
+function isCommentMetaOption(t: string) { return parseMeta(t)?.kind === 'comment'; }
+function isTextMetaOption(t: string) { return parseMeta(t)?.kind === 'text'; }
+function isCategoryMetaOption(t: string) { return parseMeta(t)?.kind === 'category'; }
 
 const Results = () => {
   const { id } = useParams();
@@ -40,6 +36,9 @@ const Results = () => {
   const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
   const [responses, setResponses] = useState<Response[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Category filter state
+  const [selectedCategory, setSelectedCategory] = useState<string>('__all__');
 
   const surveyUrl = `${window.location.origin}/survey/${id}`;
 
@@ -76,9 +75,46 @@ const Results = () => {
     finally { setLoading(false); }
   };
 
+  const copyToClipboard = () => { navigator.clipboard.writeText(surveyUrl); toast.success('Link kopiert!'); };
+
+  // ── Category logic ────────────────────────────────────────────────────────
+
+  /** The question marked as category (if any) */
+  const categoryQuestion = questions.find((q) =>
+    (options[q.id] || []).some((o) => isCategoryMetaOption(o.option_text))
+  ) ?? null;
+
+  /** Visible options of the category question */
+  const categoryOptions = categoryQuestion
+    ? (options[categoryQuestion.id] || []).filter((o) => !isMetaOption(o.option_text))
+    : [];
+
+  /**
+   * Set of participant_ids that match the selected category.
+   * If no category question or "all" selected → null (= no filter).
+   */
+  const filteredParticipants: Set<string> | null = (() => {
+    if (!categoryQuestion || selectedCategory === '__all__') return null;
+    // Find participants who answered the category question with the selected option
+    const catResponses = responses.filter(
+      (r) => r.question_id === categoryQuestion.id && r.option_id === selectedCategory
+    );
+    return new Set(catResponses.map((r) => r.participant_id));
+  })();
+
+  /** Filter responses by participant if a category is active */
+  const filterResponses = (rs: Response[]) => {
+    if (!filteredParticipants) return rs;
+    return rs.filter((r) => filteredParticipants.has(r.participant_id));
+  };
+
+  // ── Chart helpers ─────────────────────────────────────────────────────────
+
   const getChartData = (questionId: string) => {
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
-    const questionResponses = responses.filter((r) => r.question_id === questionId && r.option_id);
+    const questionResponses = filterResponses(
+      responses.filter((r) => r.question_id === questionId && r.option_id)
+    );
     return questionOptions.map((option) => ({
       name: option.option_text,
       value: questionResponses.filter((r) => r.option_id === option.id).length,
@@ -92,13 +128,14 @@ const Results = () => {
     (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
 
   const getComments = (questionId: string): string[] =>
-    responses
-      .filter((r) => r.question_id === questionId && r.text_response && !r.option_id)
+    filterResponses(responses.filter((r) => r.question_id === questionId && r.text_response && !r.option_id))
       .map((r) => r.text_response as string)
       .filter(Boolean);
 
   const getWordCloud = (questionId: string) => {
-    const questionResponses = responses.filter((r) => r.question_id === questionId && r.option_id);
+    const questionResponses = filterResponses(
+      responses.filter((r) => r.question_id === questionId && r.option_id)
+    );
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
     const idToText = new Map(questionOptions.map((o) => [o.id, o.option_text]));
     const counts = new Map<string, number>();
@@ -112,7 +149,7 @@ const Results = () => {
       .sort((a, b) => b.count - a.count);
   };
 
-  const copyToClipboard = () => { navigator.clipboard.writeText(surveyUrl); toast.success('Link kopiert!'); };
+  // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" /></div>;
@@ -128,10 +165,12 @@ const Results = () => {
     );
   }
 
-  const totalResponses = new Set(responses.map((r) => r.participant_id)).size;
+  const allParticipants = new Set(responses.map((r) => r.participant_id));
+  const totalResponses = allParticipants.size;
+  const filteredCount = filteredParticipants ? filteredParticipants.size : totalResponses;
   const isPublished = survey.status === 'published';
 
-  // Kommentar-Sektion (wiederverwendbar)
+  // Sub-component: comments section
   const CommentsSection = ({ questionId }: { questionId: string }) => {
     const commentList = getComments(questionId);
     if (!hasComments(questionId)) return null;
@@ -147,15 +186,18 @@ const Results = () => {
         ) : (
           <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
             {commentList.map((c, i) => (
-              <div key={i} className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-sm text-gray-800 leading-relaxed">
-                {c}
-              </div>
+              <div key={i} className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-sm text-gray-800 leading-relaxed">{c}</div>
             ))}
           </div>
         )}
       </div>
     );
   };
+
+  // Non-category questions to display
+  const displayQuestions = questions.filter((q) =>
+    !(options[q.id] || []).some((o) => isCategoryMetaOption(o.option_text))
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
@@ -173,7 +215,11 @@ const Results = () => {
                 {isPublished ? 'Produktiv' : 'Vorlage'}
               </Badge>
             </div>
-            <p className="text-gray-600">{totalResponses} Teilnehmer</p>
+            <p className="text-gray-600">
+              {filteredParticipants
+                ? <><span className="font-semibold text-purple-700">{filteredCount}</span> von {totalResponses} Teilnehmern (gefiltert)</>
+                : <>{totalResponses} Teilnehmer</>}
+            </p>
           </div>
 
           {isPublished ? (
@@ -205,6 +251,59 @@ const Results = () => {
           )}
         </div>
 
+        {/* Category filter */}
+        {categoryQuestion && (
+          <Card className="mb-6 border-purple-200 bg-purple-50/40">
+            <CardContent className="pt-4 pb-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 text-sm font-semibold text-purple-800">
+                  <Tag className="w-4 h-4" />
+                  Kategorie-Filter:
+                  <span className="font-normal text-purple-700">{categoryQuestion.question_text}</span>
+                </div>
+                <div className="flex items-center gap-2 ml-auto">
+                  <Filter className="w-4 h-4 text-purple-600" />
+                  <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                    <SelectTrigger className="w-56 border-purple-300 bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">
+                        Alle Teilnehmer ({totalResponses})
+                      </SelectItem>
+                      {categoryOptions.map((opt) => {
+                        const count = responses.filter(
+                          (r) => r.question_id === categoryQuestion.id && r.option_id === opt.id
+                        ).length;
+                        return (
+                          <SelectItem key={opt.id} value={opt.id}>
+                            {opt.option_text} ({count})
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                  {selectedCategory !== '__all__' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedCategory('__all__')}
+                      className="border-purple-300 text-purple-700 hover:bg-purple-100"
+                    >
+                      Filter zurücksetzen
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {selectedCategory !== '__all__' && (
+                <div className="mt-2 text-xs text-purple-700 bg-purple-100 rounded-lg px-3 py-1.5">
+                  Zeige Ergebnisse für: <strong>{categoryOptions.find((o) => o.id === selectedCategory)?.option_text}</strong> – {filteredCount} {filteredCount === 1 ? 'Teilnehmer' : 'Teilnehmer'}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {totalResponses === 0 && (
           <Card className="mb-6 border-blue-200 bg-blue-50">
             <CardContent className="pt-4 pb-4 text-sm text-blue-800">
@@ -213,9 +312,64 @@ const Results = () => {
           </Card>
         )}
 
-        {/* Charts */}
+        {/* Charts – category question shown separately at top */}
+        {categoryQuestion && (
+          <Card className="mb-6 border-purple-200">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Tag className="w-5 h-5 text-purple-500" />
+                {categoryQuestion.question_text}
+                <Badge className="bg-purple-100 text-purple-700 border-purple-300 text-xs ml-1">Kategorie</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                const chartData = getChartData(categoryQuestion.id);
+                const total = chartData.reduce((s, d) => s + d.value, 0);
+                return (
+                  <div className="flex flex-wrap gap-3">
+                    {chartData.map((item, i) => (
+                      <button
+                        key={item.name}
+                        onClick={() => {
+                          const opt = categoryOptions.find((o) => o.option_text === item.name);
+                          if (opt) setSelectedCategory(selectedCategory === opt.id ? '__all__' : opt.id);
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 transition-all text-sm font-medium ${
+                          selectedCategory === (categoryOptions.find((o) => o.option_text === item.name)?.id ?? '')
+                            ? 'border-purple-500 bg-purple-100 text-purple-800 shadow-sm'
+                            : 'border-gray-200 bg-white text-gray-700 hover:border-purple-300 hover:bg-purple-50'
+                        }`}
+                      >
+                        <span
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                        />
+                        {item.name}
+                        <span className="ml-1 bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded-full">
+                          {item.value} {total > 0 ? `(${Math.round((item.value / total) * 100)}%)` : ''}
+                        </span>
+                      </button>
+                    ))}
+                    {selectedCategory !== '__all__' && (
+                      <button
+                        onClick={() => setSelectedCategory('__all__')}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-dashed border-gray-300 text-gray-500 hover:border-gray-400 text-sm transition-all"
+                      >
+                        Alle anzeigen
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+              <CommentsSection questionId={categoryQuestion.id} />
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Other questions */}
         <div className="space-y-6">
-          {questions.map((question) => {
+          {displayQuestions.map((question) => {
             if (isTextOnlyQuestion(question.id)) {
               const cloud = getWordCloud(question.id);
               const max = Math.max(1, ...cloud.map((c) => c.count));
@@ -262,7 +416,7 @@ const Results = () => {
                           <XAxis dataKey="name" />
                           <YAxis allowDecimals={false} />
                           <Tooltip /><Legend />
-                          <Bar dataKey="value" fill="#3b82f6" name="Antworten" />
+                          <Bar dataKey="value" fill={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Antworten" />
                         </BarChart>
                       </ResponsiveContainer>
                     </TabsContent>
@@ -274,7 +428,7 @@ const Results = () => {
                           <XAxis dataKey="name" />
                           <YAxis allowDecimals={false} />
                           <Tooltip /><Legend />
-                          <Line type="monotone" dataKey="value" stroke="#3b82f6" name="Antworten" strokeWidth={2} />
+                          <Line type="monotone" dataKey="value" stroke={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Antworten" strokeWidth={2} />
                         </LineChart>
                       </ResponsiveContainer>
                     </TabsContent>

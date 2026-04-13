@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare } from 'lucide-react';
+import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { encodeDescriptionWithMeta, decodeDescriptionWithMeta } from '@/utils/surveyMeta';
@@ -22,10 +22,11 @@ function buildTextMetaOption(maxAnswers: number) {
 function buildCommentMetaOption() {
   return `${META_PREFIX}${JSON.stringify({ kind: 'comment' })}`;
 }
-
-function isMetaOption(text: string) {
-  return text.startsWith(META_PREFIX);
+function buildCategoryMetaOption() {
+  return `${META_PREFIX}${JSON.stringify({ kind: 'category' })}`;
 }
+
+function isMetaOption(text: string) { return text.startsWith(META_PREFIX); }
 
 function parseTextMaxAnswers(optionText: string): number | null {
   if (!isMetaOption(optionText)) return null;
@@ -39,10 +40,14 @@ function parseTextMaxAnswers(optionText: string): number | null {
 
 function isCommentMetaOption(optionText: string): boolean {
   if (!isMetaOption(optionText)) return false;
-  try {
-    const raw = optionText.slice(META_PREFIX.length);
-    return JSON.parse(raw)?.kind === 'comment';
-  } catch { return false; }
+  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'comment'; }
+  catch { return false; }
+}
+
+function isCategoryMetaOption(optionText: string): boolean {
+  if (!isMetaOption(optionText)) return false;
+  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'category'; }
+  catch { return false; }
 }
 
 interface QuestionData {
@@ -53,6 +58,7 @@ interface QuestionData {
   options: { id: string; dbId?: string; text: string }[];
   text_max_answers: number;
   allow_comment: boolean;
+  is_category: boolean;
 }
 
 const CreateSurvey = () => {
@@ -127,6 +133,7 @@ const CreateSurvey = () => {
         const qOptions = optionsByQuestion[q.id] || [];
         const metaOpt = qOptions.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
         const hasComment = qOptions.some((o: any) => isCommentMetaOption(o.option_text));
+        const hasCategory = qOptions.some((o: any) => isCategoryMetaOption(o.option_text));
         const isTextQ = !!metaOpt;
         const visibleOptions = qOptions.filter((o: any) => !isMetaOption(o.option_text));
 
@@ -137,6 +144,7 @@ const CreateSurvey = () => {
           question_type: isTextQ ? 'text' : q.question_type,
           text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : 3,
           allow_comment: hasComment,
+          is_category: hasCategory,
           options: visibleOptions.map((o: any) => ({ id: crypto.randomUUID(), dbId: o.id, text: o.option_text })),
         };
       });
@@ -160,6 +168,7 @@ const CreateSurvey = () => {
       question_type: 'single',
       text_max_answers: 3,
       allow_comment: false,
+      is_category: false,
       options: [{ id: crypto.randomUUID(), text: '' }, { id: crypto.randomUUID(), text: '' }],
     }]);
   };
@@ -179,6 +188,8 @@ const CreateSurvey = () => {
       if (q.id !== questionId) return q;
       const next = { ...q, [field]: value } as QuestionData;
       if (field === 'question_type' && value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
+      // Reset is_category if type changes away from single
+      if (field === 'question_type' && value !== 'single') next.is_category = false;
       return next;
     }));
   };
@@ -240,6 +251,8 @@ const CreateSurvey = () => {
       toast.error('Das Stimmen-Limit muss ≥ 1 sein'); return false;
     }
     if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
+    const categoryCount = questions.filter((q) => q.is_category).length;
+    if (categoryCount > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
     for (const q of questions) {
       if (!q.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return false; }
       if (q.question_type === 'text') {
@@ -317,9 +330,14 @@ const CreateSurvey = () => {
         }
       }
 
-      // Kommentar-Meta-Option speichern
       if (question.allow_comment) {
         const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildCommentMetaOption(), order_index: 9998 });
+        if (error) throw error;
+      }
+
+      // Kategorie-Meta-Option speichern
+      if (question.is_category && question.question_type === 'single') {
+        const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildCategoryMetaOption(), order_index: 9997 });
         if (error) throw error;
       }
     }
@@ -334,6 +352,8 @@ const CreateSurvey = () => {
       </div>
     );
   }
+
+  const categoryCount = questions.filter((q) => q.is_category).length;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
@@ -399,13 +419,20 @@ const CreateSurvey = () => {
                 onDragEnd={handleDragEnd}
                 className={`transition-all duration-150 ${isDragging ? 'opacity-40 scale-[0.98]' : 'opacity-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 rounded-xl' : ''}`}
               >
-                <Card className="overflow-hidden">
+                <Card className={`overflow-hidden ${question.is_category ? 'border-purple-300 bg-purple-50/20' : ''}`}>
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
                       <div className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0" title="Ziehen zum Verschieben">
                         <GripVertical className="w-5 h-5" />
                       </div>
-                      <CardTitle className="text-lg flex-1">Frage {qIndex + 1}</CardTitle>
+                      <CardTitle className="text-lg flex-1 flex items-center gap-2">
+                        Frage {qIndex + 1}
+                        {question.is_category && (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                            <Tag className="w-3 h-3" /> Kategorie
+                          </span>
+                        )}
+                      </CardTitle>
                       <div className="flex gap-1">
                         <Button onClick={() => moveQuestion(qIndex, qIndex - 1)} disabled={qIndex === 0} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30" title="Nach oben">
                           <ChevronUp className="w-4 h-4" />
@@ -474,22 +501,53 @@ const CreateSurvey = () => {
                       <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
                     )}
 
-                    {/* Kommentar-Option */}
-                    <div className="flex items-start gap-3 pt-2 border-t border-gray-100">
-                      <Checkbox
-                        id={`comment-${question.id}`}
-                        checked={question.allow_comment}
-                        onCheckedChange={(checked) => updateQuestion(question.id, 'allow_comment', !!checked)}
-                        className="mt-0.5"
-                      />
-                      <div>
-                        <Label htmlFor={`comment-${question.id}`} className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
-                          <MessageSquare className="w-4 h-4 text-blue-500" />
-                          Persönlichen Kommentar erlauben
-                        </Label>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          Teilnehmer können optional einen freien Kommentar (max. 1024 Zeichen) zur Frage hinterlassen.
-                        </p>
+                    {/* Checkboxes */}
+                    <div className="space-y-3 pt-2 border-t border-gray-100">
+
+                      {/* Kategorie-Option – nur bei Einfachauswahl */}
+                      {question.question_type === 'single' && (
+                        <div className="flex items-start gap-3">
+                          <Checkbox
+                            id={`category-${question.id}`}
+                            checked={question.is_category}
+                            disabled={!question.is_category && categoryCount >= 1}
+                            onCheckedChange={(checked) => updateQuestion(question.id, 'is_category', !!checked)}
+                            className="mt-0.5"
+                          />
+                          <div>
+                            <Label
+                              htmlFor={`category-${question.id}`}
+                              className={`cursor-pointer flex items-center gap-1.5 font-medium ${!question.is_category && categoryCount >= 1 ? 'text-gray-400' : 'text-gray-700'}`}
+                            >
+                              <Tag className="w-4 h-4 text-purple-500" />
+                              Als Kategorie verwenden
+                            </Label>
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              {!question.is_category && categoryCount >= 1
+                                ? 'Es kann nur eine Frage als Kategorie markiert werden.'
+                                : 'In der Auswertung können Antworten nach dieser Frage gefiltert werden.'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Kommentar-Option */}
+                      <div className="flex items-start gap-3">
+                        <Checkbox
+                          id={`comment-${question.id}`}
+                          checked={question.allow_comment}
+                          onCheckedChange={(checked) => updateQuestion(question.id, 'allow_comment', !!checked)}
+                          className="mt-0.5"
+                        />
+                        <div>
+                          <Label htmlFor={`comment-${question.id}`} className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
+                            <MessageSquare className="w-4 h-4 text-blue-500" />
+                            Persönlichen Kommentar erlauben
+                          </Label>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Teilnehmer können optional einen freien Kommentar (max. 1024 Zeichen) zur Frage hinterlassen.
+                          </p>
+                        </div>
                       </div>
                     </div>
                   </CardContent>
