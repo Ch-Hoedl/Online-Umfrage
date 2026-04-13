@@ -28,27 +28,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadProfile = async (userId: string) => {
     try {
+      console.log('[AuthContext] Loading profile for user:', userId);
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
-      if (error) throw error;
+      if (error) {
+        console.error('[AuthContext] Error loading profile:', error);
+        throw error;
+      }
+      console.log('[AuthContext] Profile loaded:', data);
       setProfile(data as Profile);
-    } catch {
+    } catch (err) {
+      console.error('[AuthContext] Failed to load profile:', err);
       setProfile(null);
     }
   };
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
+      console.log('[AuthContext] Initial session:', session?.user?.email);
       const u = session?.user ?? null;
       setUser(u);
       if (u) await loadProfile(u.id);
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('[AuthContext] Auth state changed:', event, session?.user?.email);
       const u = session?.user ?? null;
       setUser(u);
       if (u) {
