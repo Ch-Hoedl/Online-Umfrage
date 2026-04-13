@@ -16,6 +16,7 @@ export interface Survey {
   version: number;
   editing_by: string | null;
   editing_since: string | null;
+  last_modified_by: string | null;
 }
 
 export interface Question {

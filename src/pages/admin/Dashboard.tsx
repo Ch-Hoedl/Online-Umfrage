@@ -53,6 +53,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [responseCounts, setResponseCounts] = useState<{ [surveyId: string]: number }>({});
   const [pendingCount, setPendingCount] = useState(0);
+  const [lastModifiedByNames, setLastModifiedByNames] = useState<{ [userId: string]: string }>({});
 
   // dialogs
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; status: 'draft' | 'published'; title: string } | null>(null);
@@ -124,6 +125,23 @@ const Dashboard = () => {
 
       const publishedSurveys = (data || []).filter((s: Survey) => s.status === 'published');
       if (publishedSurveys.length > 0) loadResponseCounts(publishedSurveys.map((s: Survey) => s.id));
+
+      // Load last modified by names
+      const userIds = [...new Set((data || []).map((s: Survey) => s.last_modified_by).filter(Boolean))] as string[];
+      if (userIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name')
+          .in('id', userIds);
+        
+        if (profiles) {
+          const names: { [userId: string]: string } = {};
+          profiles.forEach(p => {
+            names[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unbekannt';
+          });
+          setLastModifiedByNames(names);
+        }
+      }
     } catch { toast.error('Fehler beim Laden der Umfragen'); }
     finally { setLoading(false); }
   };
@@ -226,6 +244,7 @@ const Dashboard = () => {
           visibility: 'private', // Published surveys are not templates
           allow_copy: true,
           allow_edit: false,
+          last_modified_by: user.id,
         })
         .select('*').single();
       if (surveyError) throw surveyError;
@@ -299,6 +318,7 @@ const Dashboard = () => {
           visibility: 'private', // Always private when duplicating
           allow_copy: true,
           allow_edit: false,
+          last_modified_by: user.id,
         })
         .select('*').single();
       if (surveyError) throw surveyError;
@@ -406,9 +426,17 @@ const Dashboard = () => {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-          <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
-          <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp(survey.updated_at || survey.created_at)}</span></span>
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+            <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+            <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp(survey.updated_at || survey.created_at)}</span></span>
+          </div>
+          {survey.last_modified_by && survey.last_modified_by !== survey.created_by && (
+            <div className="flex items-center gap-1.5 text-xs text-purple-700 bg-purple-50 rounded-lg px-3 py-2 border border-purple-200">
+              <UserCheck className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>Letzte Änderung von: <span className="font-medium">{lastModifiedByNames[survey.last_modified_by] || 'Unbekannt'}</span></span>
+            </div>
+          )}
         </div>
         <div className="flex gap-2">
           <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-amber-300 hover:bg-amber-50">
@@ -517,9 +545,17 @@ const Dashboard = () => {
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-            <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
-            <span>Erstellt von anderem Benutzer</span>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+              <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+              <span>Erstellt von anderem Benutzer</span>
+            </div>
+            {survey.last_modified_by && (
+              <div className="flex items-center gap-1.5 text-xs text-blue-700 bg-blue-50 rounded-lg px-3 py-2 border border-blue-200">
+                <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>Letzte Änderung: <span className="font-medium">{lastModifiedByNames[survey.last_modified_by] || 'Unbekannt'}</span> • {formatTimestamp(survey.updated_at)}</span>
+              </div>
+            )}
           </div>
           {isCollaborative && (
             <div className="flex items-start gap-2 text-xs text-green-800 bg-green-50 border border-green-200 rounded-lg px-3 py-2">

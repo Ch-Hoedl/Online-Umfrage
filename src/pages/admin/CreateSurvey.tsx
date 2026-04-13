@@ -397,7 +397,8 @@ const CreateSurvey = () => {
         is_active: false,
         visibility,
         allow_copy: allowCopy,
-        allow_edit: allowEdit
+        allow_edit: allowEdit,
+        last_modified_by: user?.id
       })
       .select().single();
     if (error) throw error;
@@ -447,7 +448,8 @@ const CreateSurvey = () => {
         allow_edit: allowEdit,
         version: currentVersion + 1,
         editing_by: null,
-        editing_since: null
+        editing_since: null,
+        last_modified_by: user?.id
       })
       .eq('id', surveyId)
       .eq('version', currentVersion); // Double-check version
