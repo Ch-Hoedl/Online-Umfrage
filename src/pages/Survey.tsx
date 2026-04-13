@@ -8,386 +8,256 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { CheckCircle2, BarChart3, MessageSquare } from 'lucide-react';
+import { CheckCircle2, BarChart3, MessageSquare, ChevronLeft, ChevronRight, Send } from 'lucide-react';
 import { decodeDescriptionWithMeta } from '@/utils/surveyMeta';
+
+// ── constants & helpers ───────────────────────────────────────────────────────
 
 const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
 const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
-
 const META_PREFIX = '__dyad_meta__:';
 
-function isMetaOption(optionText: string) {
-  return optionText.startsWith(META_PREFIX);
-}
+function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
 
-function parseTextMaxAnswers(optionText: string): number | null {
-  if (!isMetaOption(optionText)) return null;
+function parseTextMaxAnswers(t: string): number | null {
+  if (!isMetaOption(t)) return null;
   try {
-    const raw = optionText.slice(META_PREFIX.length);
-    const parsed = JSON.parse(raw);
-    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') {
-      return parsed.maxAnswers;
-    }
-  } catch {
-    // ignore
-  }
+    const p = JSON.parse(t.slice(META_PREFIX.length));
+    if (p?.kind === 'text' && typeof p?.maxAnswers === 'number') return p.maxAnswers;
+  } catch { /* ignore */ }
   return null;
 }
 
-function isCommentMetaOption(optionText: string): boolean {
-  if (!isMetaOption(optionText)) return false;
-  try {
-    return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'comment';
-  } catch { return false; }
+function isCommentMetaOption(t: string): boolean {
+  if (!isMetaOption(t)) return false;
+  try { return JSON.parse(t.slice(META_PREFIX.length))?.kind === 'comment'; }
+  catch { return false; }
 }
 
 function getDeviceId() {
-  const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
-  if (existing) return existing;
-  const created = crypto.randomUUID();
-  localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
-  return created;
+  const e = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+  if (e) return e;
+  const id = crypto.randomUUID();
+  localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+  return id;
 }
+function hasVotedLocally(sid: string) { return localStorage.getItem(`${VOTED_SURVEY_PREFIX}${sid}`) === '1'; }
+function markVotedLocally(sid: string) { localStorage.setItem(`${VOTED_SURVEY_PREFIX}${sid}`, '1'); }
+function normalizeTextTerm(v: string) { return v.trim().replace(/\s+/g, ' '); }
 
-function hasVotedLocally(surveyId: string) {
-  return localStorage.getItem(`${VOTED_SURVEY_PREFIX}${surveyId}`) === '1';
-}
-
-function markVotedLocally(surveyId: string) {
-  localStorage.setItem(`${VOTED_SURVEY_PREFIX}${surveyId}`, '1');
-}
-
-function normalizeTextTerm(value: string) {
-  return value.trim().replace(/\s+/g, ' ');
-}
+// ── component ─────────────────────────────────────────────────────────────────
 
 const SurveyPage = () => {
   const { id } = useParams();
+
+  // data
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [options, setOptions] = useState<{ [key: string]: Option[] }>({});
-  const [answers, setAnswers] = useState<{ [key: string]: string[] }>({});
-  const [comments, setComments] = useState<{ [key: string]: string }>({});
+  const [options, setOptions] = useState<{ [qid: string]: Option[] }>({});
+
+  // answers (stored locally until submit)
+  const [answers, setAnswers] = useState<{ [qid: string]: string[] }>({});
+  const [comments, setComments] = useState<{ [qid: string]: string }>({});
+
+  // navigation
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  // status
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-
   const [participantCount, setParticipantCount] = useState(0);
   const [alreadyVoted, setAlreadyVoted] = useState(false);
   const [limitReached, setLimitReached] = useState(false);
   const [expired, setExpired] = useState(false);
 
-  const canVote = useMemo(() => {
-    return !submitting && !submitted && !alreadyVoted && !limitReached && !expired;
-  }, [alreadyVoted, expired, limitReached, submitted, submitting]);
+  const canVote = useMemo(
+    () => !submitting && !submitted && !alreadyVoted && !limitReached && !expired,
+    [alreadyVoted, expired, limitReached, submitted, submitting],
+  );
 
-  useEffect(() => {
-    loadSurvey();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  useEffect(() => { loadSurvey(); }, [id]);
+
+  // ── data loading ─────────────────────────────────────────────────────────────
 
   const loadSurvey = async () => {
     setLoading(true);
-
     try {
       const { data: surveyData, error: surveyError } = await supabase
-        .from('surveys')
-        .select('*')
-        .eq('id', id)
-        .eq('is_active', true)
-        .single();
-
+        .from('surveys').select('*').eq('id', id).eq('is_active', true).single();
       if (surveyError) throw surveyError;
 
       const decoded = decodeDescriptionWithMeta(surveyData.description);
       const expiresAt = surveyData.expires_at ?? decoded.meta.expires_at ?? null;
       const maxVotes = surveyData.max_votes ?? decoded.meta.max_votes ?? null;
-
-      const normalizedSurvey: Survey = {
-        ...surveyData,
-        description: decoded.description,
-        expires_at: expiresAt,
-        max_votes: maxVotes,
-      };
-
+      const normalizedSurvey: Survey = { ...surveyData, description: decoded.description, expires_at: expiresAt, max_votes: maxVotes };
       setSurvey(normalizedSurvey);
 
-      const isExpired = !!expiresAt && new Date(expiresAt).getTime() <= Date.now();
-      setExpired(isExpired);
-
+      setExpired(!!expiresAt && new Date(expiresAt).getTime() <= Date.now());
       setAlreadyVoted(hasVotedLocally(normalizedSurvey.id));
 
-      const { data: questionsData, error: questionsError } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('survey_id', id)
-        .order('order_index');
-
-      if (questionsError) throw questionsError;
+      const { data: questionsData, error: qErr } = await supabase
+        .from('questions').select('*').eq('survey_id', id).order('order_index');
+      if (qErr) throw qErr;
       const loadedQuestions = questionsData || [];
       setQuestions(loadedQuestions);
 
       const questionIds = loadedQuestions.map((q) => q.id);
-
       if (questionIds.length > 0) {
-        const { data: respData, error: respError } = await supabase
-          .from('responses')
-          .select('participant_id')
-          .in('question_id', questionIds);
-
-        if (respError) throw respError;
-
+        const { data: respData } = await supabase
+          .from('responses').select('participant_id').in('question_id', questionIds);
         const participants = new Set((respData || []).map((r) => r.participant_id));
         setParticipantCount(participants.size);
-
         const deviceId = getDeviceId();
-        if (participants.has(deviceId)) {
-          setAlreadyVoted(true);
-          markVotedLocally(normalizedSurvey.id);
-        }
-
+        if (participants.has(deviceId)) { setAlreadyVoted(true); markVotedLocally(normalizedSurvey.id); }
         setLimitReached(!!maxVotes && participants.size >= maxVotes);
-      } else {
-        setParticipantCount(0);
-        setLimitReached(false);
+
+        const { data: optionsData } = await supabase
+          .from('options').select('*').in('question_id', questionIds);
+        const byQ: { [qid: string]: Option[] } = {};
+        optionsData?.forEach((opt) => {
+          if (!byQ[opt.question_id]) byQ[opt.question_id] = [];
+          byQ[opt.question_id].push(opt);
+        });
+        Object.keys(byQ).forEach((qid) => byQ[qid].sort((a, b) => a.order_index - b.order_index));
+        setOptions(byQ);
       }
-
-      const { data: optionsData, error: optionsError } = await supabase
-        .from('options')
-        .select('*')
-        .in('question_id', questionIds);
-
-      if (optionsError) throw optionsError;
-
-      const optionsByQuestion: { [key: string]: Option[] } = {};
-      optionsData?.forEach((opt) => {
-        if (!optionsByQuestion[opt.question_id]) {
-          optionsByQuestion[opt.question_id] = [];
-        }
-        optionsByQuestion[opt.question_id].push(opt);
-      });
-
-      Object.keys(optionsByQuestion).forEach((questionId) => {
-        optionsByQuestion[questionId].sort((a, b) => a.order_index - b.order_index);
-      });
-
-      setOptions(optionsByQuestion);
-    } catch (error) {
-      toast.error('Umfrage nicht gefunden oder nicht aktiv');
-    } finally {
-      setLoading(false);
-    }
+    } catch { toast.error('Umfrage nicht gefunden oder nicht aktiv'); }
+    finally { setLoading(false); }
   };
 
-  const getTextMaxAnswers = (questionId: string) => {
-    const meta = (options[questionId] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
+  // ── question helpers ──────────────────────────────────────────────────────────
+
+  const getTextMaxAnswers = (qid: string) => {
+    const meta = (options[qid] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
     const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
     return parsed && parsed >= 1 ? parsed : 1;
   };
+  const hasCommentOption = (qid: string) => (options[qid] || []).some((o) => isCommentMetaOption(o.option_text));
+  const isTextQuestion = (qid: string) => (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
+  const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
-  const hasCommentOption = (questionId: string) =>
-    (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
+  // ── answer handlers ───────────────────────────────────────────────────────────
 
-  const isTextQuestion = (questionId: string) => {
-    return (options[questionId] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
-  };
-
-  const getVisibleOptions = (questionId: string) => {
-    return (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
-  };
-
-  const handleSingleChoice = (questionId: string, optionId: string) => {
+  const handleSingleChoice = (qid: string, optionId: string) => {
     if (!canVote) return;
-    setAnswers({ ...answers, [questionId]: [optionId] });
+    setAnswers((prev) => ({ ...prev, [qid]: [optionId] }));
+  };
+  const handleMultipleChoice = (qid: string, optionId: string, checked: boolean) => {
+    if (!canVote) return;
+    setAnswers((prev) => {
+      const cur = prev[qid] || [];
+      return { ...prev, [qid]: checked ? [...cur, optionId] : cur.filter((id) => id !== optionId) };
+    });
+  };
+  const handleTextChange = (qid: string, index: number, value: string) => {
+    if (!canVote) return;
+    setAnswers((prev) => {
+      const next = (prev[qid] || []).slice();
+      while (next.length <= index) next.push('');
+      next[index] = value;
+      return { ...prev, [qid]: next };
+    });
+  };
+  const handleCommentChange = (qid: string, value: string) => {
+    if (!canVote) return;
+    setComments((prev) => ({ ...prev, [qid]: value }));
   };
 
-  const handleMultipleChoice = (questionId: string, optionId: string, checked: boolean) => {
-    if (!canVote) return;
-    const currentAnswers = answers[questionId] || [];
-    if (checked) {
-      setAnswers({ ...answers, [questionId]: [...currentAnswers, optionId] });
-    } else {
-      setAnswers({
-        ...answers,
-        [questionId]: currentAnswers.filter((aid) => aid !== optionId),
-      });
+  // ── navigation ────────────────────────────────────────────────────────────────
+
+  const isCurrentAnswered = () => {
+    if (!questions[currentIndex]) return false;
+    const q = questions[currentIndex];
+    if (isTextQuestion(q.id)) {
+      const terms = (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean);
+      return terms.length > 0;
     }
+    return (answers[q.id] || []).length > 0;
   };
 
-  const handleTextChange = (questionId: string, index: number, value: string) => {
-    if (!canVote) return;
-    const current = answers[questionId] || [];
-    const next = current.slice();
-    while (next.length <= index) next.push('');
-    next[index] = value;
-    setAnswers({ ...answers, [questionId]: next });
+  const goNext = () => {
+    if (currentIndex < questions.length - 1) setCurrentIndex((i) => i + 1);
+  };
+  const goPrev = () => {
+    if (currentIndex > 0) setCurrentIndex((i) => i - 1);
   };
 
-  const handleCommentChange = (questionId: string, value: string) => {
-    if (!canVote) return;
-    setComments({ ...comments, [questionId]: value });
-  };
+  // ── submit ────────────────────────────────────────────────────────────────────
 
-  const getOrCreateTextOptionId = async (questionId: string, term: string) => {
+  const getOrCreateTextOptionId = async (qid: string, term: string) => {
     const normalized = normalizeTextTerm(term);
     if (!normalized) throw new Error('empty term');
-
-    const existingInState = getVisibleOptions(questionId).find(
-      (o) => o.option_text.toLowerCase() === normalized.toLowerCase()
-    );
+    const existingInState = getVisibleOptions(qid).find((o) => o.option_text.toLowerCase() === normalized.toLowerCase());
     if (existingInState) return existingInState.id;
-
-    const { data: existing, error: existingError } = await supabase
-      .from('options')
-      .select('*')
-      .eq('question_id', questionId)
-      .eq('option_text', normalized)
-      .maybeSingle();
-
-    if (existingError) throw existingError;
+    const { data: existing } = await supabase.from('options').select('*').eq('question_id', qid).eq('option_text', normalized).maybeSingle();
     if (existing) return (existing as Option).id;
-
-    const { data: created, error: createError } = await supabase
-      .from('options')
-      .insert({
-        question_id: questionId,
-        option_text: normalized,
-        order_index: 0,
-      })
-      .select('*')
-      .single();
-
-    if (createError) throw createError;
+    const { data: created, error } = await supabase.from('options').insert({ question_id: qid, option_text: normalized, order_index: 0 }).select('*').single();
+    if (error) throw error;
     return (created as Option).id;
   };
 
   const handleSubmit = async () => {
     if (!survey) return;
+    if (expired) { toast.error('Diese Umfrage ist abgelaufen'); return; }
+    if (limitReached) { toast.error('Das Stimmen-Limit wurde erreicht'); return; }
+    if (alreadyVoted || hasVotedLocally(survey.id)) { toast.error('Sie haben bereits teilgenommen'); return; }
 
-    if (expired) {
-      toast.error('Diese Umfrage ist abgelaufen');
-      return;
-    }
-    if (limitReached) {
-      toast.error('Das Stimmen-Limit wurde erreicht');
-      return;
-    }
-    if (alreadyVoted || hasVotedLocally(survey.id)) {
-      toast.error('Sie haben bereits an dieser Umfrage teilgenommen');
-      return;
-    }
-
+    // Validate all questions
     for (const question of questions) {
       if (isTextQuestion(question.id)) {
-        const max = getTextMaxAnswers(question.id);
-        const terms = (answers[question.id] || [])
-          .slice(0, max)
-          .map(normalizeTextTerm)
-          .filter(Boolean);
-        if (terms.length === 0) {
-          toast.error('Bitte beantworten Sie alle Fragen');
-          return;
-        }
+        const terms = (answers[question.id] || []).map(normalizeTextTerm).filter(Boolean);
+        if (terms.length === 0) { toast.error('Bitte beantworten Sie alle Fragen'); setCurrentIndex(questions.indexOf(question)); return; }
         continue;
       }
-
       if (!answers[question.id] || answers[question.id].length === 0) {
         toast.error('Bitte beantworten Sie alle Fragen');
+        setCurrentIndex(questions.indexOf(question));
         return;
       }
     }
 
     setSubmitting(true);
-
     try {
       const participantId = getDeviceId();
-
-      // Re-Check kurz vor dem Insert
       const questionIds = questions.map((q) => q.id);
+
+      // Re-check before insert
       if (questionIds.length > 0) {
-        const { data: respData, error: respError } = await supabase
-          .from('responses')
-          .select('participant_id')
-          .in('question_id', questionIds);
-
-        if (respError) throw respError;
-
+        const { data: respData } = await supabase.from('responses').select('participant_id').in('question_id', questionIds);
         const participants = new Set((respData || []).map((r) => r.participant_id));
-        if (participants.has(participantId)) {
-          setAlreadyVoted(true);
-          markVotedLocally(survey.id);
-          toast.error('Sie haben bereits an dieser Umfrage teilgenommen');
-          return;
-        }
-
-        const maxVotes = survey.max_votes ?? null;
-        if (maxVotes && participants.size >= maxVotes) {
-          setLimitReached(true);
-          toast.error('Das Stimmen-Limit wurde erreicht');
-          return;
-        }
+        if (participants.has(participantId)) { setAlreadyVoted(true); markVotedLocally(survey.id); toast.error('Sie haben bereits teilgenommen'); return; }
+        if (survey.max_votes && participants.size >= survey.max_votes) { setLimitReached(true); toast.error('Das Stimmen-Limit wurde erreicht'); return; }
       }
 
       for (const question of questions) {
         if (isTextQuestion(question.id)) {
           const max = getTextMaxAnswers(question.id);
-          const terms = (answers[question.id] || [])
-            .slice(0, max)
-            .map(normalizeTextTerm)
-            .filter(Boolean);
-
+          const terms = (answers[question.id] || []).slice(0, max).map(normalizeTextTerm).filter(Boolean);
           for (const term of terms) {
             const optionId = await getOrCreateTextOptionId(question.id, term);
-            const { error } = await supabase.from('responses').insert({
-              question_id: question.id,
-              option_id: optionId,
-              participant_id: participantId,
-            });
+            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId });
             if (error) throw error;
           }
-
-          // Kommentar speichern falls vorhanden
-          const comment = comments[question.id]?.trim();
-          if (comment && hasCommentOption(question.id)) {
-            const { error } = await supabase.from('responses').insert({
-              question_id: question.id,
-              option_id: null,
-              participant_id: participantId,
-              text_response: comment.slice(0, 1024),
-            });
+        } else {
+          for (const optionId of (answers[question.id] || [])) {
+            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId });
             if (error) throw error;
           }
-
-          continue;
         }
 
-        const selectedOptionIds = answers[question.id] || [];
-        for (const optionId of selectedOptionIds) {
-          const { error } = await supabase.from('responses').insert({
-            question_id: question.id,
-            option_id: optionId,
-            participant_id: participantId,
-          });
-          if (error) throw error;
-        }
-
-        // Kommentar speichern falls vorhanden
+        // Save comment if present
         const comment = comments[question.id]?.trim();
         if (comment && hasCommentOption(question.id)) {
-          const { error } = await supabase.from('responses').insert({
-            question_id: question.id,
-            option_id: null,
-            participant_id: participantId,
-            text_response: comment.slice(0, 1024),
-          });
+          const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: comment.slice(0, 1024) });
           if (error) throw error;
         }
       }
 
       markVotedLocally(survey.id);
       setSubmitted(true);
-      toast.success('Vielen Dank für Ihre Teilnahme!');
     } catch (error) {
       console.error(error);
       toast.error('Fehler beim Absenden der Antworten');
@@ -396,10 +266,12 @@ const SurveyPage = () => {
     }
   };
 
+  // ── render states ─────────────────────────────────────────────────────────────
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
       </div>
     );
   }
@@ -417,193 +289,277 @@ const SurveyPage = () => {
     );
   }
 
+  // Thank-you screen
   if (submitted) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
-        <Card className="max-w-md w-full">
-          <CardContent className="pt-6 text-center">
-            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <CheckCircle2 className="w-8 h-8 text-green-600" />
-            </div>
-            <h2 className="text-2xl font-bold mb-2">Vielen Dank!</h2>
-            <p className="text-gray-600">Ihre Antworten wurden erfolgreich gespeichert.</p>
-          </CardContent>
-        </Card>
+        <div className="max-w-md w-full text-center">
+          <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg">
+            <CheckCircle2 className="w-12 h-12 text-green-600" />
+          </div>
+          <h2 className="text-3xl font-bold text-gray-900 mb-3">Vielen Dank!</h2>
+          <p className="text-lg text-gray-600 mb-2">Ihre Antworten wurden erfolgreich gespeichert.</p>
+          <p className="text-gray-500">Wir schätzen Ihre Teilnahme und Ihr wertvolles Feedback sehr.</p>
+          <div className="mt-8 pt-6 border-t border-gray-100">
+            <p className="text-sm text-gray-400">Sie können dieses Fenster nun schließen.</p>
+          </div>
+        </div>
       </div>
     );
   }
 
   const showClosedBanner = expired || limitReached || alreadyVoted;
+  const totalQuestions = questions.length;
+  const isLastQuestion = currentIndex === totalQuestions - 1;
+  const progressPercent = totalQuestions > 0 ? ((currentIndex + 1) / totalQuestions) * 100 : 0;
+  const currentQuestion = questions[currentIndex];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
-      <div className="container mx-auto px-4 max-w-3xl">
+      <div className="container mx-auto px-4 max-w-2xl">
+
+        {/* Survey header */}
         <div className="mb-8 text-center">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4">
-            <BarChart3 className="w-8 h-8 text-white" />
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-blue-600 rounded-2xl mb-4 shadow-md">
+            <BarChart3 className="w-7 h-7 text-white" />
           </div>
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">{survey.title}</h1>
-          {survey.description && (
-            <p className="text-lg text-gray-600">{survey.description}</p>
-          )}
+          <h1 className="text-3xl font-bold text-gray-900 mb-1">{survey.title}</h1>
+          {survey.description && <p className="text-gray-600">{survey.description}</p>}
         </div>
 
+        {/* Closed banner */}
         {showClosedBanner && (
           <Card className="mb-6 border-amber-200 bg-amber-50">
-            <CardContent className="pt-6">
-              {alreadyVoted && (
-                <p className="text-amber-900 font-medium">Sie haben bereits an dieser Umfrage teilgenommen.</p>
-              )}
-              {expired && (
-                <p className="text-amber-900 font-medium">Diese Umfrage ist abgelaufen und kann nicht mehr beantwortet werden.</p>
-              )}
-              {limitReached && (
-                <p className="text-amber-900 font-medium">Das Stimmen-Limit wurde erreicht. Es können keine weiteren Antworten abgegeben werden.</p>
-              )}
+            <CardContent className="pt-4 pb-4">
+              {alreadyVoted && <p className="text-amber-900 font-medium">Sie haben bereits an dieser Umfrage teilgenommen.</p>}
+              {expired && <p className="text-amber-900 font-medium">Diese Umfrage ist abgelaufen und kann nicht mehr beantwortet werden.</p>}
+              {limitReached && <p className="text-amber-900 font-medium">Das Stimmen-Limit wurde erreicht.</p>}
             </CardContent>
           </Card>
         )}
 
-        <div className="space-y-6">
-          {questions.map((question, index) => {
-            const visibleOptions = getVisibleOptions(question.id);
-            const textQuestion = isTextQuestion(question.id);
-            const textMax = textQuestion ? getTextMaxAnswers(question.id) : 0;
+        {totalQuestions > 0 && (
+          <>
+            {/* Progress bar */}
+            <div className="mb-6">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm font-medium text-gray-600">
+                  Frage <span className="text-blue-600 font-bold">{currentIndex + 1}</span> von <span className="font-bold">{totalQuestions}</span>
+                </span>
+                <span className="text-sm text-gray-500">{Math.round(progressPercent)}%</span>
+              </div>
+              <Progress value={progressPercent} className="h-2.5 rounded-full" />
+            </div>
 
-            return (
-              <Card key={question.id} className={!canVote ? 'opacity-75' : ''}>
-                <CardHeader>
-                  <CardTitle className="text-xl">
-                    {index + 1}. {question.question_text}
-                  </CardTitle>
-                  <CardDescription>
-                    {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
-                    {!textQuestion && question.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                    {!textQuestion && question.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                    {!textQuestion && question.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {!textQuestion && question.question_type === 'single' && (
-                    <RadioGroup
-                      value={answers[question.id]?.[0] || ''}
-                      onValueChange={(value) => handleSingleChoice(question.id, value)}
-                    >
-                      {visibleOptions.map((option) => (
-                        <div key={option.id} className="flex items-center space-x-2 mb-3">
-                          <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} />
-                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
-                            {option.option_text}
-                          </Label>
-                        </div>
-                      ))}
-                    </RadioGroup>
-                  )}
+            {/* Question card */}
+            {currentQuestion && (() => {
+              const qid = currentQuestion.id;
+              const visibleOptions = getVisibleOptions(qid);
+              const textQuestion = isTextQuestion(qid);
+              const textMax = textQuestion ? getTextMaxAnswers(qid) : 0;
 
-                  {!textQuestion && question.question_type === 'multiple' && (
-                    <div className="space-y-3">
-                      {visibleOptions.map((option) => (
-                        <div key={option.id} className="flex items-center space-x-2">
-                          <Checkbox
-                            id={option.id}
-                            disabled={!canVote}
-                            checked={answers[question.id]?.includes(option.id) || false}
-                            onCheckedChange={(checked) =>
-                              handleMultipleChoice(question.id, option.id, checked as boolean)
-                            }
-                          />
-                          <Label htmlFor={option.id} className={canVote ? 'cursor-pointer flex-1' : 'flex-1'}>
-                            {option.option_text}
-                          </Label>
-                        </div>
-                      ))}
+              return (
+                <Card className={`shadow-md transition-all ${!canVote ? 'opacity-75' : ''}`}>
+                  <CardHeader className="pb-4">
+                    <div className="flex items-start gap-3">
+                      <span className="flex-shrink-0 w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-bold flex items-center justify-center mt-0.5">
+                        {currentIndex + 1}
+                      </span>
+                      <div>
+                        <CardTitle className="text-xl leading-snug">{currentQuestion.question_text}</CardTitle>
+                        <CardDescription className="mt-1">
+                          {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
+                          {!textQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
+                          {!textQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
+                          {!textQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                        </CardDescription>
+                      </div>
                     </div>
-                  )}
+                  </CardHeader>
+                  <CardContent className="pt-0">
 
-                  {!textQuestion && question.question_type === 'rating' && (
-                    <RadioGroup
-                      value={answers[question.id]?.[0] || ''}
-                      onValueChange={(value) => handleSingleChoice(question.id, value)}
-                    >
-                      <div className="flex gap-4 justify-center">
+                    {/* Single choice */}
+                    {!textQuestion && currentQuestion.question_type === 'single' && (
+                      <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
+                        <div className="space-y-2">
+                          {visibleOptions.map((option) => (
+                            <label
+                              key={option.id}
+                              htmlFor={option.id}
+                              className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-all ${
+                                answers[qid]?.[0] === option.id
+                                  ? 'border-blue-500 bg-blue-50'
+                                  : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
+                              } ${!canVote ? 'cursor-default' : ''}`}
+                            >
+                              <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} />
+                              <span className="flex-1 text-gray-800">{option.option_text}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </RadioGroup>
+                    )}
+
+                    {/* Multiple choice */}
+                    {!textQuestion && currentQuestion.question_type === 'multiple' && (
+                      <div className="space-y-2">
                         {visibleOptions.map((option) => (
-                          <div key={option.id} className="flex flex-col items-center">
-                            <RadioGroupItem
-                              value={option.id}
+                          <label
+                            key={option.id}
+                            htmlFor={option.id}
+                            className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-all ${
+                              answers[qid]?.includes(option.id)
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
+                            } ${!canVote ? 'cursor-default' : ''}`}
+                          >
+                            <Checkbox
                               id={option.id}
-                              className="mb-2"
                               disabled={!canVote}
+                              checked={answers[qid]?.includes(option.id) || false}
+                              onCheckedChange={(checked) => handleMultipleChoice(qid, option.id, checked as boolean)}
                             />
-                            <Label htmlFor={option.id} className={canVote ? 'cursor-pointer text-lg font-semibold' : 'text-lg font-semibold'}>
-                              {option.option_text}
-                            </Label>
-                          </div>
+                            <span className="flex-1 text-gray-800">{option.option_text}</span>
+                          </label>
                         ))}
                       </div>
-                    </RadioGroup>
-                  )}
+                    )}
 
-                  {textQuestion && (
-                    <div className="space-y-3">
-                      {Array.from({ length: textMax }).map((_, idx) => (
-                        <div key={idx} className="space-y-1">
-                          <Label>Antwort {idx + 1}</Label>
-                          <Input
-                            value={answers[question.id]?.[idx] || ''}
-                            onChange={(e) => handleTextChange(question.id, idx, e.target.value)}
-                            placeholder="z.B. Service, Preis, Qualität"
-                            disabled={!canVote}
-                          />
+                    {/* Rating */}
+                    {!textQuestion && currentQuestion.question_type === 'rating' && (
+                      <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
+                        <div className="flex gap-3 justify-center flex-wrap">
+                          {visibleOptions.map((option) => (
+                            <label
+                              key={option.id}
+                              htmlFor={option.id}
+                              className={`flex flex-col items-center justify-center w-14 h-14 rounded-xl border-2 cursor-pointer transition-all font-bold text-lg ${
+                                answers[qid]?.[0] === option.id
+                                  ? 'border-blue-500 bg-blue-600 text-white shadow-md'
+                                  : 'border-gray-200 text-gray-700 hover:border-blue-300 hover:bg-blue-50'
+                              } ${!canVote ? 'cursor-default' : ''}`}
+                            >
+                              <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} className="sr-only" />
+                              {option.option_text}
+                            </label>
+                          ))}
                         </div>
-                      ))}
-                      <p className="text-xs text-gray-500">
-                        Tipp: Kurze Begriffe funktionieren am besten für die Begriffswolke.
-                      </p>
-                    </div>
-                  )}
+                      </RadioGroup>
+                    )}
 
-                  {/* Kommentarfeld */}
-                  {hasCommentOption(question.id) && (
-                    <div className="mt-4 pt-4 border-t border-gray-100">
-                      <Label htmlFor={`comment-${question.id}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
-                        <MessageSquare className="w-4 h-4 text-blue-400" />
-                        Persönlicher Kommentar <span className="text-gray-400">(optional)</span>
-                      </Label>
-                      <textarea
-                        id={`comment-${question.id}`}
-                        value={comments[question.id] || ''}
-                        onChange={(e) => handleCommentChange(question.id, e.target.value)}
-                        disabled={!canVote}
-                        maxLength={1024}
-                        rows={3}
-                        placeholder="Ihr persönlicher Kommentar zu dieser Frage…"
-                        className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-none disabled:opacity-50"
-                      />
-                      <p className="text-xs text-gray-400 text-right mt-1">
-                        {(comments[question.id] || '').length}/1024
-                      </p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                    {/* Text / word cloud */}
+                    {textQuestion && (
+                      <div className="space-y-3">
+                        {Array.from({ length: textMax }).map((_, idx) => (
+                          <div key={idx} className="space-y-1">
+                            {textMax > 1 && <Label>Antwort {idx + 1}</Label>}
+                            <Input
+                              value={answers[qid]?.[idx] || ''}
+                              onChange={(e) => handleTextChange(qid, idx, e.target.value)}
+                              placeholder="Ihre Antwort…"
+                              disabled={!canVote}
+                            />
+                          </div>
+                        ))}
+                        <p className="text-xs text-gray-500">Tipp: Kurze Begriffe funktionieren am besten für die Begriffswolke.</p>
+                      </div>
+                    )}
 
-        <div className="mt-8 space-y-2">
-          {typeof survey.max_votes === 'number' && (
-            <p className="text-sm text-gray-600 text-center">
-              Teilnehmer: {participantCount}/{survey.max_votes}
-            </p>
-          )}
-          <Button
-            onClick={handleSubmit}
-            disabled={!canVote}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-lg py-6"
-          >
-            {submitting ? 'Wird gesendet...' : 'Antworten absenden'}
-          </Button>
-        </div>
+                    {/* Comment field */}
+                    {hasCommentOption(qid) && (
+                      <div className="mt-5 pt-4 border-t border-gray-100">
+                        <Label htmlFor={`comment-${qid}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
+                          <MessageSquare className="w-4 h-4 text-blue-400" />
+                          Persönlicher Kommentar <span className="text-gray-400">(optional)</span>
+                        </Label>
+                        <textarea
+                          id={`comment-${qid}`}
+                          value={comments[qid] || ''}
+                          onChange={(e) => handleCommentChange(qid, e.target.value)}
+                          disabled={!canVote}
+                          maxLength={1024}
+                          rows={3}
+                          placeholder="Ihr persönlicher Kommentar zu dieser Frage…"
+                          className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-none disabled:opacity-50"
+                        />
+                        <p className="text-xs text-gray-400 text-right mt-1">{(comments[qid] || '').length}/1024</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })()}
+
+            {/* Navigation */}
+            <div className="mt-6 flex items-center gap-3">
+              <Button
+                variant="outline"
+                onClick={goPrev}
+                disabled={currentIndex === 0}
+                className="flex items-center gap-2 px-5"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                Zurück
+              </Button>
+
+              {/* Dot indicators */}
+              <div className="flex-1 flex justify-center gap-1.5 flex-wrap">
+                {questions.map((q, i) => {
+                  const answered = isTextQuestion(q.id)
+                    ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
+                    : (answers[q.id] || []).length > 0;
+                  return (
+                    <button
+                      key={q.id}
+                      onClick={() => setCurrentIndex(i)}
+                      title={`Frage ${i + 1}`}
+                      className={`w-2.5 h-2.5 rounded-full transition-all ${
+                        i === currentIndex
+                          ? 'bg-blue-600 scale-125'
+                          : answered
+                          ? 'bg-blue-300'
+                          : 'bg-gray-300 hover:bg-gray-400'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+
+              {isLastQuestion ? (
+                <Button
+                  onClick={handleSubmit}
+                  disabled={!canVote || submitting}
+                  className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold"
+                >
+                  <Send className="w-4 h-4" />
+                  {submitting ? 'Wird gesendet…' : 'Absenden'}
+                </Button>
+              ) : (
+                <Button
+                  onClick={goNext}
+                  className="flex items-center gap-2 px-5 bg-blue-600 hover:bg-blue-700"
+                >
+                  Weiter
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+
+            {/* Submit hint on last question */}
+            {isLastQuestion && canVote && (
+              <p className="text-center text-sm text-gray-500 mt-4">
+                Alle Antworten werden erst beim Klick auf <strong>„Absenden"</strong> gespeichert.
+              </p>
+            )}
+
+            {/* Participant count */}
+            {typeof survey.max_votes === 'number' && (
+              <p className="text-center text-xs text-gray-400 mt-3">
+                Teilnehmer: {participantCount}/{survey.max_votes}
+              </p>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
