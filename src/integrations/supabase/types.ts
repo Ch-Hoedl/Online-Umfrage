@@ -9,6 +9,7 @@ export interface Survey {
   expires_at?: string | null;
   created_at: string;
   updated_at: string;
+  published_at?: string | null;
 }
 
 export interface Question {

@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Plus, BarChart3, LogOut, Eye, Trash2, Edit, Users, Copy,
-  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck,
+  Rocket, FileText, QrCode, Share2, Lock, Clock, UserCheck, CalendarClock, CalendarX2,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -47,6 +47,17 @@ function formatTimestamp(iso: string | null | undefined): string {
   });
 }
 
+function formatDateOnly(iso: string | null | undefined): string {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  return d.toLocaleDateString('de-AT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function isExpired(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  return new Date(iso) < new Date();
+}
+
 // ── component ─────────────────────────────────────────────────────────────────
 
 const Dashboard = () => {
@@ -60,6 +71,7 @@ const Dashboard = () => {
   const [deleteResponseCount, setDeleteResponseCount] = useState<number | null>(null);
   const [loadingResponseCount, setLoadingResponseCount] = useState(false);
   const [publishSurvey, setPublishSurvey] = useState<Survey | null>(null);
+  const [publishing, setPublishing] = useState(false);
   const [duplicateSurvey, setDuplicateSurvey] = useState<Survey | null>(null);
   const [duplicateTitle, setDuplicateTitle] = useState('');
   const [duplicating, setDuplicating] = useState(false);
@@ -95,18 +107,14 @@ const Dashboard = () => {
       const normalized = (data || []).map(normalizeSurvey);
       setSurveys(normalized);
 
-      // Teilnehmerzahlen für produktive Umfragen laden
       const publishedSurveys = normalized.filter((s) => s.status === 'published');
-      if (publishedSurveys.length > 0) {
-        loadResponseCounts(publishedSurveys.map((s) => s.id));
-      }
+      if (publishedSurveys.length > 0) loadResponseCounts(publishedSurveys.map((s) => s.id));
     } catch { toast.error('Fehler beim Laden der Umfragen'); }
     finally { setLoading(false); }
   };
 
   const loadResponseCounts = async (surveyIds: string[]) => {
     try {
-      // Alle Fragen der produktiven Umfragen laden
       const { data: questions } = await supabase
         .from('questions').select('id, survey_id').in('survey_id', surveyIds);
       if (!questions || questions.length === 0) return;
@@ -115,7 +123,6 @@ const Dashboard = () => {
       const { data: responses } = await supabase
         .from('responses').select('question_id, participant_id').in('question_id', qIds);
 
-      // Teilnehmer pro Umfrage zählen
       const counts: { [surveyId: string]: Set<string> } = {};
       for (const q of questions) {
         if (!counts[q.survey_id]) counts[q.survey_id] = new Set();
@@ -143,16 +150,12 @@ const Dashboard = () => {
         const qIds = (qs || []).map((q: any) => q.id);
         if (qIds.length > 0) {
           const { data: rs } = await supabase.from('responses').select('participant_id').in('question_id', qIds);
-          const participants = new Set((rs || []).map((r: any) => r.participant_id));
-          setDeleteResponseCount(participants.size);
+          setDeleteResponseCount(new Set((rs || []).map((r: any) => r.participant_id)).size);
         } else {
           setDeleteResponseCount(0);
         }
-      } catch {
-        setDeleteResponseCount(0);
-      } finally {
-        setLoadingResponseCount(false);
-      }
+      } catch { setDeleteResponseCount(0); }
+      finally { setLoadingResponseCount(false); }
     }
   };
 
@@ -167,18 +170,79 @@ const Dashboard = () => {
     finally { setDeleteTarget(null); setDeleteResponseCount(null); }
   };
 
+  /**
+   * Produktiv schalten: Die Vorlage bleibt als Draft erhalten.
+   * Es wird eine interne Kopie erstellt, die sofort auf "published" gesetzt wird.
+   */
   const handlePublish = async () => {
-    if (!publishSurvey) return;
+    if (!publishSurvey || !user?.id) return;
+    setPublishing(true);
     try {
-      const { error } = await supabase
+      const now = new Date().toISOString();
+      const descriptionWithMeta = encodeDescriptionWithMeta(publishSurvey.description ?? '', {
+        max_votes: publishSurvey.max_votes ?? null,
+        expires_at: publishSurvey.expires_at ?? null,
+      });
+
+      // 1. Neue Kopie als "published" anlegen
+      const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
-        .update({ status: 'published', is_active: true })
-        .eq('id', publishSurvey.id);
-      if (error) throw error;
-      toast.success('Umfrage ist jetzt produktiv!');
+        .insert({
+          title: publishSurvey.title,
+          description: descriptionWithMeta,
+          created_by: user.id,
+          is_active: true,
+          status: 'published',
+          published_at: now,
+          max_votes: publishSurvey.max_votes ?? null,
+          expires_at: publishSurvey.expires_at ?? null,
+        })
+        .select('*').single();
+      if (surveyError) throw surveyError;
+
+      // 2. Fragen kopieren
+      const { data: questions, error: qErr } = await supabase
+        .from('questions').select('*').eq('survey_id', publishSurvey.id).order('order_index');
+      if (qErr) throw qErr;
+
+      const oldQuestions = (questions || []) as Question[];
+      const qIdMap = new Map<string, string>();
+
+      for (const q of oldQuestions) {
+        const { data: iq, error: iqErr } = await supabase
+          .from('questions')
+          .insert({
+            survey_id: newSurvey.id,
+            question_text: q.question_text,
+            question_type: q.question_type,
+            order_index: q.order_index,
+          })
+          .select('*').single();
+        if (iqErr) throw iqErr;
+        qIdMap.set(q.id, iq.id);
+      }
+
+      // 3. Optionen kopieren
+      const oldQIds = oldQuestions.map((q) => q.id);
+      if (oldQIds.length > 0) {
+        const { data: options, error: oErr } = await supabase
+          .from('options').select('*').in('question_id', oldQIds).order('order_index');
+        if (oErr) throw oErr;
+        const inserts = (options || []).map((opt: Option) => ({
+          question_id: qIdMap.get(opt.question_id)!,
+          option_text: opt.option_text,
+          order_index: opt.order_index,
+        }));
+        if (inserts.length > 0) {
+          const { error: iErr } = await supabase.from('options').insert(inserts);
+          if (iErr) throw iErr;
+        }
+      }
+
+      toast.success('Umfrage ist jetzt produktiv! Die Vorlage bleibt erhalten.');
       loadSurveys();
-    } catch { toast.error('Fehler beim Veröffentlichen'); }
-    finally { setPublishSurvey(null); }
+    } catch (e) { console.error(e); toast.error('Fehler beim Produktivschalten'); }
+    finally { setPublishing(false); setPublishSurvey(null); }
   };
 
   const handleDuplicate = async () => {
@@ -188,7 +252,7 @@ const Dashboard = () => {
 
     setDuplicating(true);
     try {
-      const descriptionWithMeta = encodeDescriptionWithMeta(duplicateSurvey.description, {
+      const descriptionWithMeta = encodeDescriptionWithMeta(duplicateSurvey.description ?? '', {
         max_votes: duplicateSurvey.max_votes ?? null,
         expires_at: duplicateSurvey.expires_at ?? null,
       });
@@ -239,7 +303,7 @@ const Dashboard = () => {
     finally { setDuplicating(false); }
   };
 
-  // ── render helpers ───────────────────────────────────────────────────────────
+  // ── render ───────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -269,7 +333,7 @@ const Dashboard = () => {
         {/* Timestamp */}
         <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
           <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
-          <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp((survey as any).updated_at || survey.created_at)}</span></span>
+          <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp(survey.updated_at || survey.created_at)}</span></span>
         </div>
         <div className="flex gap-2">
           <Button
@@ -282,26 +346,19 @@ const Dashboard = () => {
           </Button>
           <Button
             onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }}
-            variant="outline"
-            size="icon"
-            title="Als neue Vorlage duplizieren"
+            variant="outline" size="icon" title="Als neue Vorlage duplizieren"
           >
             <Copy className="w-4 h-4" />
           </Button>
           <Button
             onClick={() => openDeleteDialog(survey)}
-            variant="outline"
-            size="icon"
-            className="text-red-500 hover:text-red-700 hover:bg-red-50"
-            title="Löschen"
+            variant="outline" size="icon"
+            className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen"
           >
             <Trash2 className="w-4 h-4" />
           </Button>
         </div>
-        <Button
-          onClick={() => setPublishSurvey(survey)}
-          className="w-full bg-blue-600 hover:bg-blue-700"
-        >
+        <Button onClick={() => setPublishSurvey(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
           <Rocket className="w-4 h-4 mr-2" />
           Produktiv schalten
         </Button>
@@ -312,6 +369,7 @@ const Dashboard = () => {
   const SurveyCardPublished = ({ survey }: { survey: Survey }) => {
     const url = `${window.location.origin}/survey/${survey.id}`;
     const count = responseCounts[survey.id] ?? null;
+    const expired = isExpired(survey.expires_at);
     return (
       <Card className="hover:shadow-lg transition-all border-2 border-green-200 bg-green-50/20">
         <CardHeader>
@@ -328,18 +386,35 @@ const Dashboard = () => {
             <Badge className="bg-green-100 text-green-700 border-green-300 flex-shrink-0">Produktiv</Badge>
           </div>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-2">
           {/* Teilnehmeranzahl */}
           <div className="flex items-center gap-1.5 text-xs bg-green-50 border border-green-100 rounded-lg px-3 py-2">
             <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-green-600" />
             <span className="text-gray-600">Teilnehmer:</span>
-            {count === null ? (
-              <span className="text-gray-400 italic">wird geladen…</span>
-            ) : (
-              <span className="font-semibold text-green-700">{count} {count === 1 ? 'Person' : 'Personen'}</span>
-            )}
+            {count === null
+              ? <span className="text-gray-400 italic">wird geladen…</span>
+              : <span className="font-semibold text-green-700">{count} {count === 1 ? 'Person' : 'Personen'}</span>}
           </div>
-          <div className="flex gap-2">
+
+          {/* Produktiv seit */}
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+            <CalendarClock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+            <span>Produktiv seit: <span className="font-medium text-gray-700">{formatTimestamp(survey.published_at)}</span></span>
+          </div>
+
+          {/* Ablaufdatum */}
+          {survey.expires_at && (
+            <div className={`flex items-center gap-1.5 text-xs rounded-lg px-3 py-2 ${expired ? 'bg-red-50 border border-red-100' : 'bg-blue-50 border border-blue-100'}`}>
+              <CalendarX2 className={`w-3.5 h-3.5 flex-shrink-0 ${expired ? 'text-red-500' : 'text-blue-500'}`} />
+              <span className={expired ? 'text-red-700' : 'text-gray-600'}>
+                {expired ? 'Abgelaufen am: ' : 'Läuft ab am: '}
+                <span className="font-medium">{formatDateOnly(survey.expires_at)}</span>
+              </span>
+              {expired && <span className="ml-auto bg-red-100 text-red-700 text-xs px-1.5 py-0.5 rounded-full font-semibold">Abgelaufen</span>}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-1">
             <Button
               onClick={() => navigate(`/admin/results/${survey.id}`)}
               variant="outline"
@@ -350,34 +425,28 @@ const Dashboard = () => {
             </Button>
             <Button
               onClick={() => setShareUrl(url)}
-              variant="outline"
-              size="icon"
-              title="Teilen / QR-Code"
+              variant="outline" size="icon" title="Teilen / QR-Code"
               className="border-green-300 hover:bg-green-50"
             >
               <QrCode className="w-4 h-4" />
             </Button>
             <Button
               onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }}
-              variant="outline"
-              size="icon"
-              title="Als neue Vorlage duplizieren"
+              variant="outline" size="icon" title="Als neue Vorlage duplizieren"
             >
               <Copy className="w-4 h-4" />
             </Button>
             <Button
               onClick={() => openDeleteDialog(survey)}
-              variant="outline"
-              size="icon"
-              className="text-red-500 hover:text-red-700 hover:bg-red-50"
-              title="Löschen"
+              variant="outline" size="icon"
+              className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen"
             >
               <Trash2 className="w-4 h-4" />
             </Button>
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
             <Lock className="w-3 h-3 flex-shrink-0" />
-            <span>Gesperrt – Umfrage hat Antworten und kann nicht mehr bearbeitet werden</span>
+            <span>Gesperrt – kann nicht mehr bearbeitet werden</span>
           </div>
         </CardContent>
       </Card>
@@ -483,24 +552,29 @@ const Dashboard = () => {
       </div>
 
       {/* Publish confirmation */}
-      <AlertDialog open={!!publishSurvey} onOpenChange={() => setPublishSurvey(null)}>
+      <AlertDialog open={!!publishSurvey} onOpenChange={() => { if (!publishing) setPublishSurvey(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <Rocket className="w-5 h-5 text-blue-600" />
               Umfrage produktiv schalten?
             </AlertDialogTitle>
-            <AlertDialogDescription>
-              <strong>„{publishSurvey?.title}"</strong> wird für Teilnehmer freigegeben.
-              Sobald erste Antworten eingehen, kann die Umfrage <strong>nicht mehr bearbeitet</strong> werden.
-              Dieser Schritt kann nicht rückgängig gemacht werden.
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-gray-700">
+                <p>
+                  Von der Vorlage <strong>„{publishSurvey?.title}"</strong> wird eine Kopie erstellt und sofort für Teilnehmer freigegeben.
+                </p>
+                <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-blue-800">
+                  ✅ Die Vorlage bleibt unverändert erhalten und kann weiterhin bearbeitet werden.
+                </div>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
-            <AlertDialogAction onClick={handlePublish} className="bg-blue-600 hover:bg-blue-700">
+            <AlertDialogCancel disabled={publishing}>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction onClick={handlePublish} disabled={publishing} className="bg-blue-600 hover:bg-blue-700">
               <Rocket className="w-4 h-4 mr-2" />
-              Produktiv schalten
+              {publishing ? 'Wird veröffentlicht…' : 'Produktiv schalten'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -532,7 +606,7 @@ const Dashboard = () => {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Delete confirmation – Published (with response count warning) */}
+      {/* Delete confirmation – Published */}
       <AlertDialog
         open={!!deleteTarget && deleteTarget.status === 'published'}
         onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setDeleteResponseCount(null); } }}
@@ -563,9 +637,7 @@ const Dashboard = () => {
                     </li>
                   </ul>
                 </div>
-                <p className="font-medium text-gray-900">
-                  Diese Aktion kann nicht rückgängig gemacht werden.
-                </p>
+                <p className="font-medium text-gray-900">Diese Aktion kann nicht rückgängig gemacht werden.</p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
