@@ -280,8 +280,9 @@ const CreateSurvey = () => {
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (error) {
-      console.error(error);
-      toast.error(isEditMode ? 'Fehler beim Aktualisieren' : 'Fehler beim Erstellen');
+      console.error('[CreateSurvey] Save error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
+      toast.error(isEditMode ? `Fehler beim Aktualisieren: ${errorMessage}` : `Fehler beim Erstellen: ${errorMessage}`);
     } finally { setSaving(false); }
   };
 
@@ -295,15 +296,26 @@ const CreateSurvey = () => {
   };
 
   const updateSurvey = async (surveyId: string, expiresAt: string, parsedMaxVotes: number | null) => {
+    console.log('[CreateSurvey] Updating survey:', surveyId);
     const { error } = await supabase.from('surveys')
       .update({ title, description, max_votes: parsedMaxVotes, expires_at: expiresAt, updated_at: new Date().toISOString() })
       .eq('id', surveyId);
-    if (error) throw error;
+    if (error) {
+      console.error('[CreateSurvey] Error updating survey:', error);
+      throw error;
+    }
 
     // Delete old questions (cascade deletes options and responses)
+    console.log('[CreateSurvey] Deleting old questions for survey:', surveyId);
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
-    if (delErr) throw delErr;
+    if (delErr) {
+      console.error('[CreateSurvey] Error deleting questions:', delErr);
+      throw delErr;
+    }
+    
+    console.log('[CreateSurvey] Saving new questions');
     await saveQuestions(surveyId, questions);
+    console.log('[CreateSurvey] Survey update complete');
   };
 
   const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
