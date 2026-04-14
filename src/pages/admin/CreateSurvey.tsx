@@ -334,41 +334,55 @@ const CreateSurvey = () => {
   };
 
   const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
+    // Insert all questions in one batch
+    const questionRows = qs.map((q, i) => ({
+      survey_id: surveyId,
+      question_text: q.question_text,
+      question_type: q.question_type === 'text' ? 'multiple' : q.question_type,
+      order_index: i,
+      max_text_answers: q.question_type === 'text' ? Number(q.text_max_answers) : null,
+    }));
+
+    const { data: insertedQuestions, error: questionsError } = await supabase
+      .from('questions')
+      .insert(questionRows)
+      .select('id, order_index');
+    if (questionsError) throw questionsError;
+
+    // Sort by order_index to match original qs array order
+    const sortedInserted = [...(insertedQuestions || [])].sort((a, b) => a.order_index - b.order_index);
+
+    // Build all option rows for a single batch insert
+    const allOptionRows: { question_id: string; option_text: string; order_index: number }[] = [];
+
     for (let i = 0; i < qs.length; i++) {
       const question = qs[i];
-      const dbQuestionType = question.question_type === 'text' ? 'multiple' : question.question_type;
-
-      const { data: questionData, error: questionError } = await supabase
-        .from('questions')
-        .insert({ survey_id: surveyId, question_text: question.question_text, question_type: dbQuestionType, order_index: i, max_text_answers: question.question_type === 'text' ? Number(question.text_max_answers) : null })
-        .select().single();
-      if (questionError) throw questionError;
+      const questionId = sortedInserted[i]?.id;
+      if (!questionId) continue;
 
       if (question.question_type === 'rating') {
         for (let j = 1; j <= 5; j++) {
-          const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: j.toString(), order_index: j - 1 });
-          if (error) throw error;
+          allOptionRows.push({ question_id: questionId, option_text: j.toString(), order_index: j - 1 });
         }
       } else if (question.question_type === 'text') {
-        const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
-        if (error) throw error;
-      } else if (question.question_type === 'longtext') {
-        // No options needed
-      } else {
-        for (let j = 0; j < question.options.length; j++) {
-          const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: question.options[j].text, order_index: j });
-          if (error) throw error;
-        }
+        allOptionRows.push({ question_id: questionId, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
+      } else if (question.question_type !== 'longtext') {
+        question.options.forEach((opt, j) => {
+          allOptionRows.push({ question_id: questionId, option_text: opt.text, order_index: j });
+        });
       }
 
       if (question.allow_comment) {
-        const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildCommentMetaOption(), order_index: 9998 });
-        if (error) throw error;
+        allOptionRows.push({ question_id: questionId, option_text: buildCommentMetaOption(), order_index: 9998 });
       }
       if (question.is_category && question.question_type === 'single') {
-        const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildCategoryMetaOption(), order_index: 9997 });
-        if (error) throw error;
+        allOptionRows.push({ question_id: questionId, option_text: buildCategoryMetaOption(), order_index: 9997 });
       }
+    }
+
+    if (allOptionRows.length > 0) {
+      const { error: optionsError } = await supabase.from('options').insert(allOptionRows);
+      if (optionsError) throw optionsError;
     }
   };
 
