@@ -434,9 +434,8 @@ const CreateSurvey = () => {
   };
 
   const handleSave = async () => {
-    console.log('[CreateSurvey] handleSave: saving=', saving, 'editId=', editId, 'questionsRef=', questionsRef.current.length);
     const qs = questionsRef.current;
-    if (!validate(qs)) { console.log('[CreateSurvey] validate failed'); return; }
+    if (!validate(qs)) return;
     setSaving(true);
     try {
       if (isEditMode && editId) {
