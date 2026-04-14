@@ -11,6 +11,6 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     // gets aborted and throws an unhandled AbortError.
     // With lock disabled the auth client falls back to a simple in-memory mutex
     // which works perfectly fine for single-tab SPAs.
-    lock: async (_name, _acquireTimeout, fn) => fn(),
+    lock: async (_name, _acquireTimeout, fn) => await fn(),
   },
 });
