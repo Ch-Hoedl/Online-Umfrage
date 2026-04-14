@@ -1,33 +1,25 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Question } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { AlertTriangle, Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag, Users, Lock, Copy, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Plus, Trash2, ArrowLeft, Save, ChevronUp, ChevronDown, MessageSquare, Tag, Users, Lock, Copy, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
 // ── Meta-option helpers ───────────────────────────────────────────────────────
 
 const META_PREFIX = '__dyad_meta__:';
+const buildTextMetaOption = (maxAnswers: number) => `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
+const buildCommentMetaOption = () => `${META_PREFIX}${JSON.stringify({ kind: 'comment' })}`;
+const buildCategoryMetaOption = () => `${META_PREFIX}${JSON.stringify({ kind: 'category' })}`;
+const isMetaOption = (text: string) => text.startsWith(META_PREFIX);
 
-function buildTextMetaOption(maxAnswers: number) {
-  return `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
-}
-function buildCommentMetaOption() {
-  return `${META_PREFIX}${JSON.stringify({ kind: 'comment' })}`;
-}
-function buildCategoryMetaOption() {
-  return `${META_PREFIX}${JSON.stringify({ kind: 'category' })}`;
-}
-function isMetaOption(text: string) { return text.startsWith(META_PREFIX); }
 function parseTextMaxAnswers(optionText: string): number | null {
   if (!isMetaOption(optionText)) return null;
   try {
@@ -36,26 +28,16 @@ function parseTextMaxAnswers(optionText: string): number | null {
   } catch { /* ignore */ }
   return null;
 }
-function isCommentMetaOption(optionText: string): boolean {
-  if (!isMetaOption(optionText)) return false;
-  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'comment'; }
-  catch { return false; }
-}
-function isCategoryMetaOption(optionText: string): boolean {
-  if (!isMetaOption(optionText)) return false;
-  try { return JSON.parse(optionText.slice(META_PREFIX.length))?.kind === 'category'; }
-  catch { return false; }
-}
+const isCommentMetaOption = (t: string) => { try { return isMetaOption(t) && JSON.parse(t.slice(META_PREFIX.length))?.kind === 'comment'; } catch { return false; } };
+const isCategoryMetaOption = (t: string) => { try { return isMetaOption(t) && JSON.parse(t.slice(META_PREFIX.length))?.kind === 'category'; } catch { return false; } };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type QuestionType = 'single' | 'multiple' | 'rating' | 'text' | 'longtext';
 
-interface OptionData { id: string; dbId?: string; text: string; }
-
+interface OptionData { id: string; text: string; }
 interface QuestionData {
   id: string;
-  dbId?: string;
   question_text: string;
   question_type: QuestionType;
   options: OptionData[];
@@ -64,19 +46,21 @@ interface QuestionData {
   is_category: boolean;
 }
 
-// ── QuestionCard (memoized to prevent re-renders of sibling cards) ────────────
+const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
+  single: 'Einfachauswahl',
+  multiple: 'Mehrfachauswahl',
+  rating: 'Bewertung (1–5)',
+  text: 'Offene Frage (Begriffe)',
+  longtext: 'Offene Frage (Freier Text)',
+};
+
+// ── QuestionCard ──────────────────────────────────────────────────────────────
 
 interface QuestionCardProps {
   question: QuestionData;
   index: number;
   total: number;
-  categoryCount: number;
-  isDragging: boolean;
-  isDragOver: boolean;
-  onDragStart: (e: React.DragEvent, id: string, index: number) => void;
-  onDragOver: (e: React.DragEvent, id: string) => void;
-  onDrop: (e: React.DragEvent, id: string) => void;
-  onDragEnd: () => void;
+  categoryTaken: boolean; // true if another question already has is_category=true
   onMove: (from: number, to: number) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, field: string, value: unknown) => void;
@@ -86,27 +70,15 @@ interface QuestionCardProps {
 }
 
 const QuestionCard = memo(({
-  question, index, total, categoryCount,
-  isDragging, isDragOver,
-  onDragStart, onDragOver, onDrop, onDragEnd,
+  question, index, total, categoryTaken,
   onMove, onRemove, onUpdate, onAddOption, onRemoveOption, onUpdateOption,
-}: QuestionCardProps) => (
-  <div
-    onDragOver={(e) => onDragOver(e, question.id)}
-    onDrop={(e) => onDrop(e, question.id)}
-    className={`transition-all duration-150 ${isDragging ? 'opacity-40 scale-[0.98]' : 'opacity-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 rounded-xl' : ''}`}
-  >
+}: QuestionCardProps) => {
+  const categoryDisabled = categoryTaken && !question.is_category;
+
+  return (
     <Card className={`overflow-hidden ${question.is_category ? 'border-purple-300 bg-purple-50/20' : ''}`}>
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <div
-            draggable
-            onDragStart={(e) => onDragStart(e, question.id, index)}
-            onDragEnd={onDragEnd}
-            className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0"
-          >
-            <GripVertical className="w-5 h-5" />
-          </div>
           <CardTitle className="text-lg flex-1 flex items-center gap-2">
             Frage {index + 1}
             {question.is_category && (
@@ -123,6 +95,7 @@ const QuestionCard = memo(({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Question text */}
         <div>
           <Label>Fragetext *</Label>
           <Input
@@ -131,20 +104,23 @@ const QuestionCard = memo(({
             placeholder="Ihre Frage hier eingeben"
           />
         </div>
+
+        {/* Question type – plain <select> to avoid Radix loop bug */}
         <div>
-          <Label>Fragetyp</Label>
-          <Select value={question.question_type} onValueChange={(value) => onUpdate(question.id, 'question_type', value)}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="single">Einfachauswahl</SelectItem>
-              <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
-              <SelectItem value="rating">Bewertung (1-5)</SelectItem>
-              <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
-              <SelectItem value="longtext">Offene Frage (Freier Text)</SelectItem>
-            </SelectContent>
-          </Select>
+          <Label htmlFor={`type-${question.id}`}>Fragetyp</Label>
+          <select
+            id={`type-${question.id}`}
+            value={question.question_type}
+            onChange={(e) => onUpdate(question.id, 'question_type', e.target.value as QuestionType)}
+            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          >
+            {(Object.entries(QUESTION_TYPE_LABELS) as [QuestionType, string][]).map(([val, label]) => (
+              <option key={val} value={val}>{label}</option>
+            ))}
+          </select>
         </div>
 
+        {/* Text max answers */}
         {question.question_type === 'text' && (
           <div>
             <Label>Max. Antworten</Label>
@@ -158,16 +134,21 @@ const QuestionCard = memo(({
           </div>
         )}
 
+        {/* Longtext info */}
         {question.question_type === 'longtext' && (
           <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
             Teilnehmer können einen freien Text (bis zu 2048 Zeichen) eingeben.
           </p>
         )}
 
+        {/* Rating info */}
         {question.question_type === 'rating' && (
-          <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
+          <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+            Für Bewertungen werden automatisch die Optionen 1–5 angelegt.
+          </p>
         )}
 
+        {/* Options */}
         {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && (
           <div>
             <Label>Antwortmöglichkeiten *</Label>
@@ -200,21 +181,16 @@ const QuestionCard = memo(({
               <Checkbox
                 id={`category-${question.id}`}
                 checked={question.is_category}
-                disabled={!question.is_category && categoryCount >= 1}
+                disabled={categoryDisabled}
                 onCheckedChange={(checked) => onUpdate(question.id, 'is_category', !!checked)}
                 className="mt-0.5"
               />
               <div>
-                <Label
-                  htmlFor={`category-${question.id}`}
-                  className={`cursor-pointer flex items-center gap-1.5 font-medium ${!question.is_category && categoryCount >= 1 ? 'text-gray-400' : 'text-gray-700'}`}
-                >
+                <Label htmlFor={`category-${question.id}`} className={`cursor-pointer flex items-center gap-1.5 font-medium ${categoryDisabled ? 'text-gray-400' : 'text-gray-700'}`}>
                   <Tag className="w-4 h-4 text-purple-500" />Als Kategorie verwenden
                 </Label>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  {!question.is_category && categoryCount >= 1
-                    ? 'Es kann nur eine Frage als Kategorie markiert werden.'
-                    : 'In der Auswertung können Antworten nach dieser Frage gefiltert werden.'}
+                  {categoryDisabled ? 'Es kann nur eine Frage als Kategorie markiert werden.' : 'In der Auswertung können Antworten nach dieser Frage gefiltert werden.'}
                 </p>
               </div>
             </div>
@@ -230,16 +206,14 @@ const QuestionCard = memo(({
               <Label htmlFor={`comment-${question.id}`} className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
                 <MessageSquare className="w-4 h-4 text-blue-500" />Persönlichen Kommentar erlauben
               </Label>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Teilnehmer können optional einen freien Kommentar (max. 1024 Zeichen) zur Frage hinterlassen.
-              </p>
+              <p className="text-xs text-gray-500 mt-0.5">Teilnehmer können optional einen freien Kommentar hinterlassen.</p>
             </div>
           </div>
         </div>
       </CardContent>
     </Card>
-  </div>
-));
+  );
+});
 QuestionCard.displayName = 'QuestionCard';
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -266,133 +240,100 @@ const CreateSurvey = () => {
   const [showConflictDialog, setShowConflictDialog] = useState(false);
   const [conflictData, setConflictData] = useState<any>(null);
 
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const draggedIndex = useRef<number>(-1);
-
   const navigate = useNavigate();
   const { user, profile } = useAuth();
+  const lockReleasedRef = useRef(false);
 
   useEffect(() => {
     if (profile && profile.role === 'user') { toast.error('Keine Berechtigung'); navigate('/admin'); }
   }, [profile]);
 
   useEffect(() => {
-    if (isEditMode && editId) {
-      loadExistingSurvey(editId);
-      acquireEditLock(editId);
-    }
-    return () => { if (isEditMode && editId) releaseEditLock(editId); };
-  }, [editId]);
-
-  useEffect(() => {
     if (!isEditMode || !editId) return;
+    lockReleasedRef.current = false;
+    loadExistingSurvey(editId);
+    acquireEditLock(editId);
     const interval = setInterval(() => refreshEditLock(editId), 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [isEditMode, editId]);
+    return () => {
+      clearInterval(interval);
+      if (!lockReleasedRef.current) releaseEditLock(editId);
+    };
+  }, [editId]);
 
   const acquireEditLock = async (surveyId: string) => {
     if (!user?.id) return;
-    try {
-      await supabase.from('surveys').update({ editing_by: user.id, editing_since: new Date().toISOString() }).eq('id', surveyId);
-    } catch { /* ignore */ }
+    await supabase.from('surveys').update({ editing_by: user.id, editing_since: new Date().toISOString() }).eq('id', surveyId);
   };
-
   const releaseEditLock = async (surveyId: string) => {
     if (!user?.id) return;
-    try {
-      await supabase.from('surveys').update({ editing_by: null, editing_since: null }).eq('id', surveyId).eq('editing_by', user.id);
-    } catch { /* ignore */ }
+    lockReleasedRef.current = true;
+    await supabase.from('surveys').update({ editing_by: null, editing_since: null }).eq('id', surveyId).eq('editing_by', user.id);
   };
-
   const refreshEditLock = async (surveyId: string) => {
     if (!user?.id) return;
-    try {
-      await supabase.from('surveys').update({ editing_since: new Date().toISOString() }).eq('id', surveyId).eq('editing_by', user.id);
-    } catch { /* ignore */ }
+    await supabase.from('surveys').update({ editing_since: new Date().toISOString() }).eq('id', surveyId).eq('editing_by', user.id);
   };
 
   const loadExistingSurvey = async (surveyId: string) => {
     setLoadingData(true);
     try {
-      const { data: surveyData, error: surveyError } = await supabase.from('surveys').select('*').eq('id', surveyId).single();
-      if (surveyError) throw surveyError;
+      const { data: s, error: sErr } = await supabase.from('surveys').select('*').eq('id', surveyId).single();
+      if (sErr) throw sErr;
 
-      setTitle(surveyData.title);
-      setDescription(surveyData.description || '');
-      setVisibility(surveyData.visibility || 'private');
-      setAllowCopy(surveyData.allow_copy ?? true);
-      setAllowEdit(surveyData.allow_edit ?? false);
-      setIsOwner(surveyData.created_by === user?.id);
-      setCurrentVersion(surveyData.version ?? 1);
-      setEditingBy(surveyData.editing_by);
-      setEditingSince(surveyData.editing_since);
+      setTitle(s.title);
+      setDescription(s.description || '');
+      setVisibility(s.visibility || 'private');
+      setAllowCopy(s.allow_copy ?? true);
+      setAllowEdit(s.allow_edit ?? false);
+      setIsOwner(s.created_by === user?.id);
+      setCurrentVersion(s.version ?? 1);
+      setEditingBy(s.editing_by);
+      setEditingSince(s.editing_since);
 
-      if (surveyData.editing_by && surveyData.editing_by !== user?.id) {
-        const { data: editorProfile } = await supabase.from('profiles').select('first_name, last_name').eq('id', surveyData.editing_by).single();
-        if (editorProfile) {
-          setEditingByName(`${editorProfile.first_name || ''} ${editorProfile.last_name || ''}`.trim() || 'Unbekannter Benutzer');
-        }
+      if (s.editing_by && s.editing_by !== user?.id) {
+        const { data: ep } = await supabase.from('profiles').select('first_name, last_name').eq('id', s.editing_by).single();
+        if (ep) setEditingByName(`${ep.first_name || ''} ${ep.last_name || ''}`.trim() || 'Unbekannter Benutzer');
       }
 
-      const { data: questionsData, error: questionsError } = await supabase
-        .from('questions').select('*').eq('survey_id', surveyId).order('order_index');
-      if (questionsError) throw questionsError;
+      const { data: qs, error: qErr } = await supabase.from('questions').select('*').eq('survey_id', surveyId).order('order_index');
+      if (qErr) throw qErr;
 
-      const loadedQuestions = questionsData || [];
-      const questionIds = loadedQuestions.map((q) => q.id);
-      let optionsData: any[] = [];
-      if (questionIds.length > 0) {
-        const { data: opts, error: optsError } = await supabase
-          .from('options').select('*').in('question_id', questionIds).order('order_index');
-        if (optsError) throw optsError;
-        optionsData = opts || [];
+      const qIds = (qs || []).map((q: any) => q.id);
+      let opts: any[] = [];
+      if (qIds.length > 0) {
+        const { data: o, error: oErr } = await supabase.from('options').select('*').in('question_id', qIds).order('order_index');
+        if (oErr) throw oErr;
+        opts = o || [];
       }
 
-      const optionsByQuestion: { [key: string]: any[] } = {};
-      optionsData.forEach((opt) => {
-        if (!optionsByQuestion[opt.question_id]) optionsByQuestion[opt.question_id] = [];
-        optionsByQuestion[opt.question_id].push(opt);
-      });
+      const optsByQ: Record<string, any[]> = {};
+      opts.forEach((o) => { (optsByQ[o.question_id] ??= []).push(o); });
 
-      const mappedQuestions: QuestionData[] = loadedQuestions.map((q) => {
-        const qOptions = optionsByQuestion[q.id] || [];
-        const metaOpt = qOptions.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
-        const hasComment = qOptions.some((o: any) => isCommentMetaOption(o.option_text));
-        const hasCategory = qOptions.some((o: any) => isCategoryMetaOption(o.option_text));
+      setQuestions((qs || []).map((q: any) => {
+        const qOpts = optsByQ[q.id] || [];
+        const metaOpt = qOpts.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
         const isTextQ = q.question_type === 'multiple' && !!metaOpt;
-        const isLongTextQ = q.question_type === 'longtext';
-        const visibleOptions = qOptions.filter((o: any) => !isMetaOption(o.option_text));
-
-        let textMaxAnswers = 3;
-        if (metaOpt) textMaxAnswers = parseTextMaxAnswers(metaOpt.option_text) ?? 3;
-        else if (q.max_text_answers) textMaxAnswers = q.max_text_answers;
-
-        let questionType: QuestionType = q.question_type as QuestionType;
-        if (isTextQ) questionType = 'text';
-        else if (isLongTextQ) questionType = 'longtext';
-
+        let qType: QuestionType = isTextQ ? 'text' : (q.question_type as QuestionType);
         return {
           id: crypto.randomUUID(),
-          dbId: q.id,
           question_text: q.question_text,
-          question_type: questionType,
-          text_max_answers: textMaxAnswers,
-          allow_comment: hasComment,
-          is_category: hasCategory,
-          options: visibleOptions.map((o: any) => ({ id: crypto.randomUUID(), dbId: o.id, text: o.option_text })),
+          question_type: qType,
+          text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : (q.max_text_answers ?? 3),
+          allow_comment: qOpts.some((o: any) => isCommentMetaOption(o.option_text)),
+          is_category: qOpts.some((o: any) => isCategoryMetaOption(o.option_text)),
+          options: qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text })),
         };
-      });
-
-      setQuestions(mappedQuestions);
-    } catch (error) {
-      console.error(error);
+      }));
+    } catch (err) {
+      console.error(err);
       toast.error('Fehler beim Laden der Umfrage');
       navigate('/admin');
-    } finally { setLoadingData(false); }
+    } finally {
+      setLoadingData(false);
+    }
   };
 
-  // ── Question helpers (stable with useCallback) ────────────────────────────
+  // ── Stable callbacks ──────────────────────────────────────────────────────
 
   const addQuestion = useCallback(() => {
     setQuestions((prev) => [...prev, {
@@ -402,23 +343,21 @@ const CreateSurvey = () => {
     }]);
   }, []);
 
-  const removeQuestion = useCallback((questionId: string) => {
-    setQuestions((prev) => prev.filter((q) => q.id !== questionId));
-  }, []);
+  const removeQuestion = useCallback((id: string) => setQuestions((prev) => prev.filter((q) => q.id !== id)), []);
 
-  const moveQuestion = useCallback((fromIndex: number, toIndex: number) => {
+  const moveQuestion = useCallback((from: number, to: number) => {
     setQuestions((prev) => {
-      if (toIndex < 0 || toIndex >= prev.length) return prev;
+      if (to < 0 || to >= prev.length) return prev;
       const next = [...prev];
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
       return next;
     });
   }, []);
 
-  const updateQuestion = useCallback((questionId: string, field: string, value: unknown) => {
+  const updateQuestion = useCallback((id: string, field: string, value: unknown) => {
     setQuestions((prev) => prev.map((q) => {
-      if (q.id !== questionId) return q;
+      if (q.id !== id) return q;
       const next = { ...q, [field]: value } as QuestionData;
       if (field === 'question_type') {
         if (value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
@@ -428,73 +367,30 @@ const CreateSurvey = () => {
     }));
   }, []);
 
-  const addOption = useCallback((questionId: string) => {
+  const addOption = useCallback((qId: string) => {
     setQuestions((prev) => prev.map((q) =>
-      q.id === questionId ? { ...q, options: [...q.options, { id: crypto.randomUUID(), text: '' }] } : q
+      q.id === qId ? { ...q, options: [...q.options, { id: crypto.randomUUID(), text: '' }] } : q
     ));
   }, []);
 
-  const removeOption = useCallback((questionId: string, optionId: string) => {
+  const removeOption = useCallback((qId: string, oId: string) => {
     setQuestions((prev) => prev.map((q) =>
-      q.id === questionId ? { ...q, options: q.options.filter((o) => o.id !== optionId) } : q
+      q.id === qId ? { ...q, options: q.options.filter((o) => o.id !== oId) } : q
     ));
   }, []);
 
-  const updateOption = useCallback((questionId: string, optionId: string, text: string) => {
+  const updateOption = useCallback((qId: string, oId: string, text: string) => {
     setQuestions((prev) => prev.map((q) =>
-      q.id === questionId ? { ...q, options: q.options.map((o) => (o.id === optionId ? { ...o, text } : o)) } : q
+      q.id === qId ? { ...q, options: q.options.map((o) => o.id === oId ? { ...o, text } : o) } : q
     ));
   }, []);
 
-  // ── Drag & Drop ───────────────────────────────────────────────────────────
-
-  const handleDragStart = useCallback((e: React.DragEvent, id: string, index: number) => {
-    setDraggedId(id);
-    draggedIndex.current = index;
-    e.dataTransfer.effectAllowed = 'move';
-    const ghost = document.createElement('div');
-    ghost.style.position = 'absolute';
-    ghost.style.top = '-9999px';
-    document.body.appendChild(ghost);
-    e.dataTransfer.setDragImage(ghost, 0, 0);
-    setTimeout(() => document.body.removeChild(ghost), 0);
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent, id: string) => {
-    // Only handle if a drag is actually in progress
-    if (draggedId === null) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverId((prev) => (prev === id ? prev : id));
-  }, [draggedId]);
-
-  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
-    e.preventDefault();
-    const fromIndex = draggedIndex.current;
-    setQuestions((prev) => {
-      const toIndex = prev.findIndex((q) => q.id === targetId);
-      if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
-      return next;
-    });
-    setDraggedId(null);
-    setDragOverId(null);
-  }, []);
-
-  const handleDragEnd = useCallback(() => {
-    setDraggedId(null);
-    setDragOverId(null);
-  }, []);
-
-  // ── Validation ────────────────────────────────────────────────────────────
+  // ── Validation & Save ─────────────────────────────────────────────────────
 
   const validate = (): boolean => {
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
     if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
-    const catCount = questions.filter((q) => q.is_category).length;
-    if (catCount > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
+    if (questions.filter((q) => q.is_category).length > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
     for (const q of questions) {
       if (!q.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return false; }
       if (q.question_type === 'text') {
@@ -508,52 +404,42 @@ const CreateSurvey = () => {
     return true;
   };
 
-  // ── Save ──────────────────────────────────────────────────────────────────
-
   const handleSave = async () => {
     if (!validate()) return;
     setSaving(true);
     try {
-      if (isEditMode && editId) await updateSurvey(editId);
-      else await createSurvey();
+      if (isEditMode && editId) await doUpdate(editId);
+      else await doCreate();
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
-      if (errorMessage !== 'VERSION_CONFLICT') {
-        toast.error(isEditMode ? `Fehler beim Aktualisieren: ${errorMessage}` : `Fehler beim Erstellen: ${errorMessage}`);
-      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unbekannter Fehler';
+      if (msg !== 'VERSION_CONFLICT') toast.error(`Fehler: ${msg}`);
     } finally { setSaving(false); }
   };
 
-  const createSurvey = async () => {
-    const { data: survey, error } = await supabase
-      .from('surveys')
+  const doCreate = async () => {
+    const { data: survey, error } = await supabase.from('surveys')
       .insert({ title, description, created_by: user?.id, status: 'draft', is_active: false, visibility, allow_copy: allowCopy, allow_edit: allowEdit, last_modified_by: user?.id })
       .select().single();
     if (error) throw error;
     await saveQuestions(survey.id, questions);
   };
 
-  const updateSurvey = async (surveyId: string, forceOverwrite = false) => {
-    const { data: currentData, error: fetchError } = await supabase.from('surveys').select('version, title, description').eq('id', surveyId).single();
-    if (fetchError) throw fetchError;
-
-    const dbVersion = currentData.version ?? 1;
-
-    if (!forceOverwrite && dbVersion !== currentVersion) {
-      setConflictData({ currentTitle: currentData.title, currentDescription: currentData.description, myTitle: title, myDescription: description });
+  const doUpdate = async (surveyId: string, force = false) => {
+    const { data: cur, error: fetchErr } = await supabase.from('surveys').select('version, title, description').eq('id', surveyId).single();
+    if (fetchErr) throw fetchErr;
+    const dbVersion = cur.version ?? 1;
+    if (!force && dbVersion !== currentVersion) {
+      setConflictData({ currentTitle: cur.title, myTitle: title });
       setShowConflictDialog(true);
       throw new Error('VERSION_CONFLICT');
     }
-
-    const newVersion = dbVersion + 1;
     const { error } = await supabase.from('surveys')
-      .update({ title, description, updated_at: new Date().toISOString(), visibility, allow_copy: allowCopy, allow_edit: allowEdit, version: newVersion, editing_by: null, editing_since: null, last_modified_by: user?.id })
+      .update({ title, description, updated_at: new Date().toISOString(), visibility, allow_copy: allowCopy, allow_edit: allowEdit, version: dbVersion + 1, editing_by: null, editing_since: null, last_modified_by: user?.id })
       .eq('id', surveyId);
     if (error) throw error;
-
-    setCurrentVersion(newVersion);
+    setCurrentVersion(dbVersion + 1);
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
     if (delErr) throw delErr;
     await saveQuestions(surveyId, questions);
@@ -561,51 +447,34 @@ const CreateSurvey = () => {
 
   const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
     if (qs.length === 0) return;
-
-    const questionRows = qs.map((q, i) => ({
+    const qRows = qs.map((q, i) => ({
       survey_id: surveyId,
       question_text: q.question_text,
       question_type: q.question_type === 'text' ? 'multiple' : q.question_type,
       order_index: i,
       max_text_answers: q.question_type === 'text' ? Number(q.text_max_answers) : null,
     }));
-
-    const { data: insertedQuestions, error: questionsError } = await supabase
-      .from('questions').insert(questionRows).select('id, order_index');
-    if (questionsError) throw questionsError;
-
-    const sortedInserted = [...(insertedQuestions || [])].sort((a, b) => a.order_index - b.order_index);
-
-    const allOptionRows: { question_id: string; option_text: string; order_index: number }[] = [];
-
+    const { data: inserted, error: qErr } = await supabase.from('questions').insert(qRows).select('id, order_index');
+    if (qErr) throw qErr;
+    const sorted = [...(inserted || [])].sort((a, b) => a.order_index - b.order_index);
+    const optRows: { question_id: string; option_text: string; order_index: number }[] = [];
     for (let i = 0; i < qs.length; i++) {
-      const question = qs[i];
-      const questionId = sortedInserted[i]?.id;
-      if (!questionId) continue;
-
-      if (question.question_type === 'rating') {
-        for (let j = 1; j <= 5; j++) {
-          allOptionRows.push({ question_id: questionId, option_text: j.toString(), order_index: j - 1 });
-        }
-      } else if (question.question_type === 'text') {
-        allOptionRows.push({ question_id: questionId, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
-      } else if (question.question_type !== 'longtext') {
-        question.options.forEach((opt, j) => {
-          allOptionRows.push({ question_id: questionId, option_text: opt.text, order_index: j });
-        });
+      const q = qs[i];
+      const qId = sorted[i]?.id;
+      if (!qId) continue;
+      if (q.question_type === 'rating') {
+        for (let j = 1; j <= 5; j++) optRows.push({ question_id: qId, option_text: j.toString(), order_index: j - 1 });
+      } else if (q.question_type === 'text') {
+        optRows.push({ question_id: qId, option_text: buildTextMetaOption(Number(q.text_max_answers)), order_index: 9999 });
+      } else if (q.question_type !== 'longtext') {
+        q.options.forEach((o, j) => optRows.push({ question_id: qId, option_text: o.text, order_index: j }));
       }
-
-      if (question.allow_comment) {
-        allOptionRows.push({ question_id: questionId, option_text: buildCommentMetaOption(), order_index: 9998 });
-      }
-      if (question.is_category && question.question_type === 'single') {
-        allOptionRows.push({ question_id: questionId, option_text: buildCategoryMetaOption(), order_index: 9997 });
-      }
+      if (q.allow_comment) optRows.push({ question_id: qId, option_text: buildCommentMetaOption(), order_index: 9998 });
+      if (q.is_category && q.question_type === 'single') optRows.push({ question_id: qId, option_text: buildCategoryMetaOption(), order_index: 9997 });
     }
-
-    if (allOptionRows.length > 0) {
-      const { error: optionsError } = await supabase.from('options').insert(allOptionRows);
-      if (optionsError) throw optionsError;
+    if (optRows.length > 0) {
+      const { error: oErr } = await supabase.from('options').insert(optRows);
+      if (oErr) throw oErr;
     }
   };
 
@@ -619,7 +488,7 @@ const CreateSurvey = () => {
     );
   }
 
-  const categoryCount = questions.filter((q) => q.is_category).length;
+  const categoryTakenId = questions.find((q) => q.is_category)?.id ?? null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
@@ -647,7 +516,6 @@ const CreateSurvey = () => {
                       return minutes > 0 ? ` (seit ${minutes} Minute${minutes === 1 ? '' : 'n'})` : ' (gerade eben)';
                     })()}
                   </p>
-                  <p className="text-xs text-amber-700 mt-1">Sie können trotzdem Änderungen vornehmen, aber es kann zu Konflikten kommen.</p>
                 </div>
               </div>
             </CardContent>
@@ -677,16 +545,10 @@ const CreateSurvey = () => {
               <div>
                 <Label>Sichtbarkeit</Label>
                 <div className="flex gap-3 mt-2">
-                  <button
-                    onClick={() => setVisibility('private')}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 text-sm font-medium transition-all ${visibility === 'private' ? 'border-gray-500 bg-gray-100 text-gray-800' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}
-                  >
+                  <button onClick={() => setVisibility('private')} className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 text-sm font-medium transition-all ${visibility === 'private' ? 'border-gray-500 bg-gray-100 text-gray-800' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
                     <Lock className="w-4 h-4" />Privat
                   </button>
-                  <button
-                    onClick={() => setVisibility('public')}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 text-sm font-medium transition-all ${visibility === 'public' ? 'border-purple-500 bg-purple-100 text-purple-800' : 'border-gray-200 text-gray-600 hover:border-purple-300'}`}
-                  >
+                  <button onClick={() => setVisibility('public')} className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 text-sm font-medium transition-all ${visibility === 'public' ? 'border-purple-500 bg-purple-100 text-purple-800' : 'border-gray-200 text-gray-600 hover:border-purple-300'}`}>
                     <Users className="w-4 h-4" />Öffentlich
                   </button>
                 </div>
@@ -696,18 +558,14 @@ const CreateSurvey = () => {
                   <div className="flex items-start gap-3">
                     <Checkbox id="allow-copy" checked={allowCopy} onCheckedChange={(c) => setAllowCopy(!!c)} className="mt-0.5" />
                     <div>
-                      <Label htmlFor="allow-copy" className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
-                        <Copy className="w-4 h-4 text-blue-500" />Kopieren erlauben
-                      </Label>
-                      <p className="text-xs text-gray-500 mt-0.5">Andere Benutzer können eine private Kopie dieser Vorlage erstellen.</p>
+                      <Label htmlFor="allow-copy" className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700"><Copy className="w-4 h-4 text-blue-500" />Kopieren erlauben</Label>
+                      <p className="text-xs text-gray-500 mt-0.5">Andere Benutzer können eine private Kopie erstellen.</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3">
                     <Checkbox id="allow-edit" checked={allowEdit} onCheckedChange={(c) => setAllowEdit(!!c)} className="mt-0.5" />
                     <div>
-                      <Label htmlFor="allow-edit" className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
-                        <RefreshCw className="w-4 h-4 text-green-500" />Kollaboratives Bearbeiten
-                      </Label>
+                      <Label htmlFor="allow-edit" className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700"><RefreshCw className="w-4 h-4 text-green-500" />Kollaboratives Bearbeiten</Label>
                       <p className="text-xs text-gray-500 mt-0.5">Alle Benutzer können diese Vorlage direkt bearbeiten.</p>
                     </div>
                   </div>
@@ -717,12 +575,7 @@ const CreateSurvey = () => {
           </Card>
         )}
 
-        {questions.length > 0 && (
-          <p className="text-sm text-gray-500 mb-3 flex items-center gap-1">
-            <GripVertical className="w-4 h-4" />Fragen per Drag &amp; Drop oder mit den Pfeilen verschieben
-          </p>
-        )}
-
+        {/* Questions */}
         <div className="space-y-3 mb-6">
           {questions.map((question, qIndex) => (
             <QuestionCard
@@ -730,13 +583,7 @@ const CreateSurvey = () => {
               question={question}
               index={qIndex}
               total={questions.length}
-              categoryCount={categoryCount}
-              isDragging={draggedId === question.id}
-              isDragOver={dragOverId === question.id}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              onDragEnd={handleDragEnd}
+              categoryTaken={categoryTakenId !== null && categoryTakenId !== question.id}
               onMove={moveQuestion}
               onRemove={removeQuestion}
               onUpdate={updateQuestion}
@@ -762,17 +609,13 @@ const CreateSurvey = () => {
       <Dialog open={showConflictDialog} onOpenChange={setShowConflictDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-amber-700">
-              <AlertTriangle className="w-5 h-5" />Bearbeitungskonflikt
-            </DialogTitle>
-            <DialogDescription>
-              Diese Vorlage wurde von jemand anderem geändert, während Sie sie bearbeitet haben.
-            </DialogDescription>
+            <DialogTitle className="flex items-center gap-2 text-amber-700"><AlertTriangle className="w-5 h-5" />Bearbeitungskonflikt</DialogTitle>
+            <DialogDescription>Diese Vorlage wurde von jemand anderem geändert, während Sie sie bearbeitet haben.</DialogDescription>
           </DialogHeader>
           {conflictData && (
             <div className="space-y-3 text-sm">
               <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
-                <p className="font-semibold text-blue-800 mb-1">Aktuelle Version (von anderem Benutzer):</p>
+                <p className="font-semibold text-blue-800 mb-1">Aktuelle Version:</p>
                 <p className="text-blue-700">Titel: {conflictData.currentTitle}</p>
               </div>
               <div className="bg-amber-50 border border-amber-100 rounded-lg p-3">
@@ -782,23 +625,15 @@ const CreateSurvey = () => {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setShowConflictDialog(false); if (editId) loadExistingSurvey(editId); }}>
-              Aktuelle Version laden
-            </Button>
+            <Button variant="outline" onClick={() => { setShowConflictDialog(false); if (editId) loadExistingSurvey(editId); }}>Aktuelle Version laden</Button>
             <Button onClick={async () => {
               setShowConflictDialog(false);
               if (!editId) return;
               setSaving(true);
-              try {
-                await updateSurvey(editId, true);
-                toast.success('Umfrage aktualisiert');
-                navigate('/admin');
-              } catch (error) {
-                toast.error('Fehler beim Speichern');
-              } finally { setSaving(false); }
-            }} className="bg-amber-600 hover:bg-amber-700">
-              Meine Version überschreiben
-            </Button>
+              try { await doUpdate(editId, true); toast.success('Umfrage aktualisiert'); navigate('/admin'); }
+              catch { toast.error('Fehler beim Speichern'); }
+              finally { setSaving(false); }
+            }} className="bg-amber-600 hover:bg-amber-700">Meine Version überschreiben</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
