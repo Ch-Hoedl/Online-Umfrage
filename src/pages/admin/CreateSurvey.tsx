@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Question, Option } from '@/integrations/supabase/types';
+import { Question } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -13,6 +13,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertTriangle, Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag, Users, Lock, Copy, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
+
+// ── Meta-option helpers ───────────────────────────────────────────────────────
 
 const META_PREFIX = '__dyad_meta__:';
 
@@ -29,8 +31,7 @@ function isMetaOption(text: string) { return text.startsWith(META_PREFIX); }
 function parseTextMaxAnswers(optionText: string): number | null {
   if (!isMetaOption(optionText)) return null;
   try {
-    const raw = optionText.slice(META_PREFIX.length);
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(optionText.slice(META_PREFIX.length));
     if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') return parsed.maxAnswers;
   } catch { /* ignore */ }
   return null;
@@ -46,16 +47,200 @@ function isCategoryMetaOption(optionText: string): boolean {
   catch { return false; }
 }
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type QuestionType = 'single' | 'multiple' | 'rating' | 'text' | 'longtext';
+
+interface OptionData { id: string; dbId?: string; text: string; }
+
 interface QuestionData {
   id: string;
   dbId?: string;
   question_text: string;
-  question_type: Question['question_type'];
-  options: { id: string; dbId?: string; text: string }[];
+  question_type: QuestionType;
+  options: OptionData[];
   text_max_answers: number;
   allow_comment: boolean;
   is_category: boolean;
 }
+
+// ── QuestionCard (memoized to prevent re-renders of sibling cards) ────────────
+
+interface QuestionCardProps {
+  question: QuestionData;
+  index: number;
+  total: number;
+  categoryCount: number;
+  isDragging: boolean;
+  isDragOver: boolean;
+  onDragStart: (e: React.DragEvent, id: string, index: number) => void;
+  onDragOver: (e: React.DragEvent, id: string) => void;
+  onDrop: (e: React.DragEvent, id: string) => void;
+  onDragEnd: () => void;
+  onMove: (from: number, to: number) => void;
+  onRemove: (id: string) => void;
+  onUpdate: (id: string, field: string, value: unknown) => void;
+  onAddOption: (id: string) => void;
+  onRemoveOption: (qId: string, oId: string) => void;
+  onUpdateOption: (qId: string, oId: string, text: string) => void;
+}
+
+const QuestionCard = memo(({
+  question, index, total, categoryCount,
+  isDragging, isDragOver,
+  onDragStart, onDragOver, onDrop, onDragEnd,
+  onMove, onRemove, onUpdate, onAddOption, onRemoveOption, onUpdateOption,
+}: QuestionCardProps) => (
+  <div
+    draggable
+    onDragStart={(e) => onDragStart(e, question.id, index)}
+    onDragOver={(e) => onDragOver(e, question.id)}
+    onDrop={(e) => onDrop(e, question.id)}
+    onDragEnd={onDragEnd}
+    className={`transition-all duration-150 ${isDragging ? 'opacity-40 scale-[0.98]' : 'opacity-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 rounded-xl' : ''}`}
+  >
+    <Card className={`overflow-hidden ${question.is_category ? 'border-purple-300 bg-purple-50/20' : ''}`}>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <div className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0">
+            <GripVertical className="w-5 h-5" />
+          </div>
+          <CardTitle className="text-lg flex-1 flex items-center gap-2">
+            Frage {index + 1}
+            {question.is_category && (
+              <span className="inline-flex items-center gap-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                <Tag className="w-3 h-3" /> Kategorie
+              </span>
+            )}
+          </CardTitle>
+          <div className="flex gap-1">
+            <Button onClick={() => onMove(index, index - 1)} disabled={index === 0} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"><ChevronUp className="w-4 h-4" /></Button>
+            <Button onClick={() => onMove(index, index + 1)} disabled={index === total - 1} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"><ChevronDown className="w-4 h-4" /></Button>
+            <Button onClick={() => onRemove(question.id)} variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"><Trash2 className="w-4 h-4" /></Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div>
+          <Label>Fragetext *</Label>
+          <Input
+            value={question.question_text}
+            onChange={(e) => onUpdate(question.id, 'question_text', e.target.value)}
+            placeholder="Ihre Frage hier eingeben"
+          />
+        </div>
+        <div>
+          <Label>Fragetyp</Label>
+          <Select value={question.question_type} onValueChange={(value) => onUpdate(question.id, 'question_type', value)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="single">Einfachauswahl</SelectItem>
+              <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
+              <SelectItem value="rating">Bewertung (1-5)</SelectItem>
+              <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
+              <SelectItem value="longtext">Offene Frage (Freier Text)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {question.question_type === 'text' && (
+          <div>
+            <Label>Max. Antworten</Label>
+            <Input
+              type="number" min={1} max={10}
+              value={question.text_max_answers}
+              onChange={(e) => onUpdate(question.id, 'text_max_answers', Math.max(1, Math.min(10, parseInt(e.target.value || '1', 10))))}
+              placeholder="z.B. 3"
+            />
+            <p className="text-xs text-gray-500 mt-1">Teilnehmer können bis zu so viele Begriffe eingeben.</p>
+          </div>
+        )}
+
+        {question.question_type === 'longtext' && (
+          <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+            Teilnehmer können einen freien Text (bis zu 2048 Zeichen) eingeben.
+          </p>
+        )}
+
+        {question.question_type === 'rating' && (
+          <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
+        )}
+
+        {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && (
+          <div>
+            <Label>Antwortmöglichkeiten *</Label>
+            <div className="space-y-2 mt-2">
+              {question.options.map((option, oIndex) => (
+                <div key={option.id} className="flex gap-2">
+                  <Input
+                    value={option.text}
+                    onChange={(e) => onUpdateOption(question.id, option.id, e.target.value)}
+                    placeholder={`Option ${oIndex + 1}`}
+                  />
+                  {question.options.length > 2 && (
+                    <Button onClick={() => onRemoveOption(question.id, option.id)} variant="outline" size="icon">
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <Button onClick={() => onAddOption(question.id)} variant="outline" size="sm" className="w-full">
+                <Plus className="w-4 h-4 mr-2" />Option hinzufügen
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Checkboxes */}
+        <div className="space-y-3 pt-2 border-t border-gray-100">
+          {question.question_type === 'single' && (
+            <div className="flex items-start gap-3">
+              <Checkbox
+                id={`category-${question.id}`}
+                checked={question.is_category}
+                disabled={!question.is_category && categoryCount >= 1}
+                onCheckedChange={(checked) => onUpdate(question.id, 'is_category', !!checked)}
+                className="mt-0.5"
+              />
+              <div>
+                <Label
+                  htmlFor={`category-${question.id}`}
+                  className={`cursor-pointer flex items-center gap-1.5 font-medium ${!question.is_category && categoryCount >= 1 ? 'text-gray-400' : 'text-gray-700'}`}
+                >
+                  <Tag className="w-4 h-4 text-purple-500" />Als Kategorie verwenden
+                </Label>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {!question.is_category && categoryCount >= 1
+                    ? 'Es kann nur eine Frage als Kategorie markiert werden.'
+                    : 'In der Auswertung können Antworten nach dieser Frage gefiltert werden.'}
+                </p>
+              </div>
+            </div>
+          )}
+          <div className="flex items-start gap-3">
+            <Checkbox
+              id={`comment-${question.id}`}
+              checked={question.allow_comment}
+              onCheckedChange={(checked) => onUpdate(question.id, 'allow_comment', !!checked)}
+              className="mt-0.5"
+            />
+            <div>
+              <Label htmlFor={`comment-${question.id}`} className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
+                <MessageSquare className="w-4 h-4 text-blue-500" />Persönlichen Kommentar erlauben
+              </Label>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Teilnehmer können optional einen freien Kommentar (max. 1024 Zeichen) zur Frage hinterlassen.
+              </p>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  </div>
+));
+QuestionCard.displayName = 'QuestionCard';
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 const CreateSurvey = () => {
   const { id: editId } = useParams<{ id?: string }>();
@@ -67,13 +252,11 @@ const CreateSurvey = () => {
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(isEditMode);
 
-  // Template sharing settings
   const [visibility, setVisibility] = useState<'private' | 'public'>('private');
   const [allowCopy, setAllowCopy] = useState(true);
   const [allowEdit, setAllowEdit] = useState(false);
   const [isOwner, setIsOwner] = useState(true);
 
-  // Version control and edit lock
   const [currentVersion, setCurrentVersion] = useState(1);
   const [editingBy, setEditingBy] = useState<string | null>(null);
   const [editingByName, setEditingByName] = useState<string | null>(null);
@@ -100,7 +283,6 @@ const CreateSurvey = () => {
     return () => { if (isEditMode && editId) releaseEditLock(editId); };
   }, [editId]);
 
-  // Heartbeat to keep lock alive
   useEffect(() => {
     if (!isEditMode || !editId) return;
     const interval = setInterval(() => refreshEditLock(editId), 5 * 60 * 1000);
@@ -111,21 +293,21 @@ const CreateSurvey = () => {
     if (!user?.id) return;
     try {
       await supabase.from('surveys').update({ editing_by: user.id, editing_since: new Date().toISOString() }).eq('id', surveyId);
-    } catch (error) { console.error('Failed to acquire edit lock:', error); }
+    } catch { /* ignore */ }
   };
 
   const releaseEditLock = async (surveyId: string) => {
     if (!user?.id) return;
     try {
       await supabase.from('surveys').update({ editing_by: null, editing_since: null }).eq('id', surveyId).eq('editing_by', user.id);
-    } catch (error) { console.error('Failed to release edit lock:', error); }
+    } catch { /* ignore */ }
   };
 
   const refreshEditLock = async (surveyId: string) => {
     if (!user?.id) return;
     try {
       await supabase.from('surveys').update({ editing_since: new Date().toISOString() }).eq('id', surveyId).eq('editing_by', user.id);
-    } catch (error) { console.error('Failed to refresh edit lock:', error); }
+    } catch { /* ignore */ }
   };
 
   const loadExistingSurvey = async (surveyId: string) => {
@@ -140,7 +322,7 @@ const CreateSurvey = () => {
       setAllowCopy(surveyData.allow_copy ?? true);
       setAllowEdit(surveyData.allow_edit ?? false);
       setIsOwner(surveyData.created_by === user?.id);
-      setCurrentVersion(surveyData.version || 1);
+      setCurrentVersion(surveyData.version ?? 1);
       setEditingBy(surveyData.editing_by);
       setEditingSince(surveyData.editing_since);
 
@@ -176,18 +358,23 @@ const CreateSurvey = () => {
         const metaOpt = qOptions.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
         const hasComment = qOptions.some((o: any) => isCommentMetaOption(o.option_text));
         const hasCategory = qOptions.some((o: any) => isCategoryMetaOption(o.option_text));
-        const isTextQ = q.question_type === 'text' || !!metaOpt;
+        const isTextQ = q.question_type === 'multiple' && !!metaOpt;
+        const isLongTextQ = q.question_type === 'longtext';
         const visibleOptions = qOptions.filter((o: any) => !isMetaOption(o.option_text));
 
         let textMaxAnswers = 3;
-        if (metaOpt) { textMaxAnswers = parseTextMaxAnswers(metaOpt.option_text) ?? 3; }
-        else if (q.max_text_answers) { textMaxAnswers = q.max_text_answers; }
+        if (metaOpt) textMaxAnswers = parseTextMaxAnswers(metaOpt.option_text) ?? 3;
+        else if (q.max_text_answers) textMaxAnswers = q.max_text_answers;
+
+        let questionType: QuestionType = q.question_type as QuestionType;
+        if (isTextQ) questionType = 'text';
+        else if (isLongTextQ) questionType = 'longtext';
 
         return {
           id: crypto.randomUUID(),
           dbId: q.id,
           question_text: q.question_text,
-          question_type: isTextQ ? 'text' : q.question_type,
+          question_type: questionType,
           text_max_answers: textMaxAnswers,
           allow_comment: hasComment,
           is_category: hasCategory,
@@ -203,82 +390,118 @@ const CreateSurvey = () => {
     } finally { setLoadingData(false); }
   };
 
-  // ── Question helpers ──────────────────────────────────────────────────────
+  // ── Question helpers (stable with useCallback) ────────────────────────────
 
-  const addQuestion = () => {
-    setQuestions([...questions, {
+  const addQuestion = useCallback(() => {
+    setQuestions((prev) => [...prev, {
       id: crypto.randomUUID(), question_text: '', question_type: 'single',
       text_max_answers: 3, allow_comment: false, is_category: false,
       options: [{ id: crypto.randomUUID(), text: '' }, { id: crypto.randomUUID(), text: '' }],
     }]);
-  };
+  }, []);
 
-  const removeQuestion = (questionId: string) => setQuestions(questions.filter((q) => q.id !== questionId));
+  const removeQuestion = useCallback((questionId: string) => {
+    setQuestions((prev) => prev.filter((q) => q.id !== questionId));
+  }, []);
 
-  const moveQuestion = (fromIndex: number, toIndex: number) => {
-    if (toIndex < 0 || toIndex >= questions.length) return;
-    const next = [...questions];
-    const [moved] = next.splice(fromIndex, 1);
-    next.splice(toIndex, 0, moved);
-    setQuestions(next);
-  };
+  const moveQuestion = useCallback((fromIndex: number, toIndex: number) => {
+    setQuestions((prev) => {
+      if (toIndex < 0 || toIndex >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  }, []);
 
-  const updateQuestion = (questionId: string, field: string, value: any) => {
-    setQuestions(questions.map((q) => {
+  const updateQuestion = useCallback((questionId: string, field: string, value: unknown) => {
+    setQuestions((prev) => prev.map((q) => {
       if (q.id !== questionId) return q;
       const next = { ...q, [field]: value } as QuestionData;
-      if (field === 'question_type' && value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
-      if (field === 'question_type' && value !== 'single') next.is_category = false;
+      if (field === 'question_type') {
+        if (value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
+        if (value !== 'single') next.is_category = false;
+      }
       return next;
     }));
-  };
+  }, []);
 
-  const addOption = (questionId: string) => setQuestions(questions.map((q) =>
-    q.id === questionId ? { ...q, options: [...q.options, { id: crypto.randomUUID(), text: '' }] } : q
-  ));
-  const removeOption = (questionId: string, optionId: string) => setQuestions(questions.map((q) =>
-    q.id === questionId ? { ...q, options: q.options.filter((o) => o.id !== optionId) } : q
-  ));
-  const updateOption = (questionId: string, optionId: string, text: string) => setQuestions(questions.map((q) =>
-    q.id === questionId ? { ...q, options: q.options.map((o) => (o.id === optionId ? { ...o, text } : o)) } : q
-  ));
+  const addOption = useCallback((questionId: string) => {
+    setQuestions((prev) => prev.map((q) =>
+      q.id === questionId ? { ...q, options: [...q.options, { id: crypto.randomUUID(), text: '' }] } : q
+    ));
+  }, []);
+
+  const removeOption = useCallback((questionId: string, optionId: string) => {
+    setQuestions((prev) => prev.map((q) =>
+      q.id === questionId ? { ...q, options: q.options.filter((o) => o.id !== optionId) } : q
+    ));
+  }, []);
+
+  const updateOption = useCallback((questionId: string, optionId: string, text: string) => {
+    setQuestions((prev) => prev.map((q) =>
+      q.id === questionId ? { ...q, options: q.options.map((o) => (o.id === optionId ? { ...o, text } : o)) } : q
+    ));
+  }, []);
 
   // ── Drag & Drop ───────────────────────────────────────────────────────────
 
-  const handleDragStart = (e: React.DragEvent, id: string, index: number) => {
-    setDraggedId(id); draggedIndex.current = index; e.dataTransfer.effectAllowed = 'move';
-    const ghost = document.createElement('div'); ghost.style.position = 'absolute'; ghost.style.top = '-9999px';
-    document.body.appendChild(ghost); e.dataTransfer.setDragImage(ghost, 0, 0);
+  const handleDragStart = useCallback((e: React.DragEvent, id: string, index: number) => {
+    setDraggedId(id);
+    draggedIndex.current = index;
+    e.dataTransfer.effectAllowed = 'move';
+    const ghost = document.createElement('div');
+    ghost.style.position = 'absolute';
+    ghost.style.top = '-9999px';
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 0, 0);
     setTimeout(() => document.body.removeChild(ghost), 0);
-  };
-  const handleDragOver = (e: React.DragEvent, id: string) => {
-    e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (id !== draggedId) setDragOverId(id);
-  };
-  const handleDrop = (e: React.DragEvent, targetId: string) => {
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, id: string) => {
     e.preventDefault();
-    if (!draggedId || draggedId === targetId) { setDraggedId(null); setDragOverId(null); return; }
-    const fromIndex = draggedIndex.current;
-    const toIndex = questions.findIndex((q) => q.id === targetId);
-    if (fromIndex !== -1 && toIndex !== -1) moveQuestion(fromIndex, toIndex);
-    setDraggedId(null); setDragOverId(null);
-  };
-  const handleDragEnd = () => { setDraggedId(null); setDragOverId(null); };
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverId((prev) => (id !== draggedId ? id : prev));
+  }, [draggedId]);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDraggedId((currentDraggedId) => {
+      if (!currentDraggedId || currentDraggedId === targetId) return null;
+      const fromIndex = draggedIndex.current;
+      setQuestions((prev) => {
+        const toIndex = prev.findIndex((q) => q.id === targetId);
+        if (fromIndex === -1 || toIndex === -1) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, moved);
+        return next;
+      });
+      return null;
+    });
+    setDragOverId(null);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedId(null);
+    setDragOverId(null);
+  }, []);
 
   // ── Validation ────────────────────────────────────────────────────────────
 
   const validate = (): boolean => {
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
     if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
-    const categoryCount = questions.filter((q) => q.is_category).length;
-    if (categoryCount > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
+    const catCount = questions.filter((q) => q.is_category).length;
+    if (catCount > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
     for (const q of questions) {
       if (!q.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return false; }
       if (q.question_type === 'text') {
         const m = Number(q.text_max_answers);
         if (!Number.isFinite(m) || m < 1 || m > 10) { toast.error('Max. Antworten muss zwischen 1 und 10 liegen'); return false; }
       }
-      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext' && q.options.some((o) => !o.text.trim())) {
-        toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false;
+      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext') {
+        if (q.options.some((o) => !o.text.trim())) { toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false; }
       }
     }
     return true;
@@ -295,7 +518,6 @@ const CreateSurvey = () => {
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (error) {
-      console.error('[CreateSurvey] Save error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
       if (errorMessage !== 'VERSION_CONFLICT') {
         toast.error(isEditMode ? `Fehler beim Aktualisieren: ${errorMessage}` : `Fehler beim Erstellen: ${errorMessage}`);
@@ -319,7 +541,7 @@ const CreateSurvey = () => {
     const dbVersion = currentData.version ?? 1;
 
     if (!forceOverwrite && dbVersion !== currentVersion) {
-      setConflictData({ currentTitle: currentData.title, currentDescription: currentData.description, myTitle: title, myDescription: description, dbVersion });
+      setConflictData({ currentTitle: currentData.title, currentDescription: currentData.description, myTitle: title, myDescription: description });
       setShowConflictDialog(true);
       throw new Error('VERSION_CONFLICT');
     }
@@ -337,7 +559,8 @@ const CreateSurvey = () => {
   };
 
   const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
-    // Insert all questions in one batch
+    if (qs.length === 0) return;
+
     const questionRows = qs.map((q, i) => ({
       survey_id: surveyId,
       question_text: q.question_text,
@@ -347,15 +570,11 @@ const CreateSurvey = () => {
     }));
 
     const { data: insertedQuestions, error: questionsError } = await supabase
-      .from('questions')
-      .insert(questionRows)
-      .select('id, order_index');
+      .from('questions').insert(questionRows).select('id, order_index');
     if (questionsError) throw questionsError;
 
-    // Sort by order_index to match original qs array order
     const sortedInserted = [...(insertedQuestions || [])].sort((a, b) => a.order_index - b.order_index);
 
-    // Build all option rows for a single batch insert
     const allOptionRows: { question_id: string; option_text: string; order_index: number }[] = [];
 
     for (let i = 0; i < qs.length; i++) {
@@ -427,7 +646,7 @@ const CreateSurvey = () => {
                       return minutes > 0 ? ` (seit ${minutes} Minute${minutes === 1 ? '' : 'n'})` : ' (gerade eben)';
                     })()}
                   </p>
-                  <p className="text-xs text-amber-700 mt-1">Sie können trotzdem Änderungen vornehmen, aber es kann zu Konflikten kommen, wenn beide gleichzeitig speichern.</p>
+                  <p className="text-xs text-amber-700 mt-1">Sie können trotzdem Änderungen vornehmen, aber es kann zu Konflikten kommen.</p>
                 </div>
               </div>
             </CardContent>
@@ -488,7 +707,7 @@ const CreateSurvey = () => {
                       <Label htmlFor="allow-edit" className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
                         <RefreshCw className="w-4 h-4 text-green-500" />Kollaboratives Bearbeiten
                       </Label>
-                      <p className="text-xs text-gray-500 mt-0.5">Alle Benutzer können diese Vorlage direkt bearbeiten (wie ein geteiltes Dokument).</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Alle Benutzer können diese Vorlage direkt bearbeiten.</p>
                     </div>
                   </div>
                 </div>
@@ -504,138 +723,27 @@ const CreateSurvey = () => {
         )}
 
         <div className="space-y-3 mb-6">
-          {questions.map((question, qIndex) => {
-            const isDragging = draggedId === question.id;
-            const isDragOver = dragOverId === question.id;
-            return (
-              <div
-                key={question.id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, question.id, qIndex)}
-                onDragOver={(e) => handleDragOver(e, question.id)}
-                onDrop={(e) => handleDrop(e, question.id)}
-                onDragEnd={handleDragEnd}
-                className={`transition-all duration-150 ${isDragging ? 'opacity-40 scale-[0.98]' : 'opacity-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 rounded-xl' : ''}`}
-              >
-                <Card className={`overflow-hidden ${question.is_category ? 'border-purple-300 bg-purple-50/20' : ''}`}>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0">
-                        <GripVertical className="w-5 h-5" />
-                      </div>
-                      <CardTitle className="text-lg flex-1 flex items-center gap-2">
-                        Frage {qIndex + 1}
-                        {question.is_category && (
-                          <span className="inline-flex items-center gap-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                            <Tag className="w-3 h-3" /> Kategorie
-                          </span>
-                        )}
-                      </CardTitle>
-                      <div className="flex gap-1">
-                        <Button onClick={() => moveQuestion(qIndex, qIndex - 1)} disabled={qIndex === 0} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"><ChevronUp className="w-4 h-4" /></Button>
-                        <Button onClick={() => moveQuestion(qIndex, qIndex + 1)} disabled={qIndex === questions.length - 1} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-blue-600 disabled:opacity-30"><ChevronDown className="w-4 h-4" /></Button>
-                        <Button onClick={() => removeQuestion(question.id)} variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"><Trash2 className="w-4 h-4" /></Button>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div>
-                      <Label>Fragetext *</Label>
-                      <Input value={question.question_text} onChange={(e) => updateQuestion(question.id, 'question_text', e.target.value)} placeholder="Ihre Frage hier eingeben" />
-                    </div>
-                    <div>
-                      <Label>Fragetyp</Label>
-                      <Select value={question.question_type} onValueChange={(value) => updateQuestion(question.id, 'question_type', value)}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="single">Einfachauswahl</SelectItem>
-                          <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
-                          <SelectItem value="rating">Bewertung (1-5)</SelectItem>
-                          <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
-                          <SelectItem value="longtext">Offene Frage (Freier Text)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {question.question_type === 'text' && (
-                      <div>
-                        <Label>Max. Antworten</Label>
-                        <Input type="number" min={1} max={10} value={question.text_max_answers}
-                          onChange={(e) => updateQuestion(question.id, 'text_max_answers', Number.parseInt(e.target.value || '1', 10))} placeholder="z.B. 3" />
-                        <p className="text-xs text-gray-500 mt-1">Teilnehmer können bis zu so viele Begriffe eingeben.</p>
-                      </div>
-                    )}
-
-                    {question.question_type === 'longtext' && (
-                      <p className="text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">Teilnehmer können einen freien Text (bis zu 2048 Zeichen) eingeben.</p>
-                    )}
-
-                    {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && (
-                      <div>
-                        <Label>Antwortmöglichkeiten *</Label>
-                        <div className="space-y-2 mt-2">
-                          {question.options.map((option, oIndex) => (
-                            <div key={option.id} className="flex gap-2">
-                              <Input value={option.text} onChange={(e) => updateOption(question.id, option.id, e.target.value)} placeholder={`Option ${oIndex + 1}`} />
-                              {question.options.length > 2 && (
-                                <Button onClick={() => removeOption(question.id, option.id)} variant="outline" size="icon"><Trash2 className="w-4 h-4" /></Button>
-                              )}
-                            </div>
-                          ))}
-                          <Button onClick={() => addOption(question.id)} variant="outline" size="sm" className="w-full">
-                            <Plus className="w-4 h-4 mr-2" />Option hinzufügen
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {question.question_type === 'rating' && (
-                      <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
-                    )}
-
-                    {/* Checkboxes */}
-                    <div className="space-y-3 pt-2 border-t border-gray-100">
-                      {question.question_type === 'single' && (
-                        <div className="flex items-start gap-3">
-                          <Checkbox
-                            id={`category-${question.id}`}
-                            checked={question.is_category}
-                            disabled={!question.is_category && categoryCount >= 1}
-                            onCheckedChange={(checked) => updateQuestion(question.id, 'is_category', !!checked)}
-                            className="mt-0.5"
-                          />
-                          <div>
-                            <Label htmlFor={`category-${question.id}`} className={`cursor-pointer flex items-center gap-1.5 font-medium ${!question.is_category && categoryCount >= 1 ? 'text-gray-400' : 'text-gray-700'}`}>
-                              <Tag className="w-4 h-4 text-purple-500" />Als Kategorie verwenden
-                            </Label>
-                            <p className="text-xs text-gray-500 mt-0.5">
-                              {!question.is_category && categoryCount >= 1
-                                ? 'Es kann nur eine Frage als Kategorie markiert werden.'
-                                : 'In der Auswertung können Antworten nach dieser Frage gefiltert werden.'}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                      <div className="flex items-start gap-3">
-                        <Checkbox
-                          id={`comment-${question.id}`}
-                          checked={question.allow_comment}
-                          onCheckedChange={(checked) => updateQuestion(question.id, 'allow_comment', !!checked)}
-                          className="mt-0.5"
-                        />
-                        <div>
-                          <Label htmlFor={`comment-${question.id}`} className="cursor-pointer flex items-center gap-1.5 font-medium text-gray-700">
-                            <MessageSquare className="w-4 h-4 text-blue-500" />Persönlichen Kommentar erlauben
-                          </Label>
-                          <p className="text-xs text-gray-500 mt-0.5">Teilnehmer können optional einen freien Kommentar (max. 1024 Zeichen) zur Frage hinterlassen.</p>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            );
-          })}
+          {questions.map((question, qIndex) => (
+            <QuestionCard
+              key={question.id}
+              question={question}
+              index={qIndex}
+              total={questions.length}
+              categoryCount={categoryCount}
+              isDragging={draggedId === question.id}
+              isDragOver={dragOverId === question.id}
+              onDragStart={handleDragStart}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+              onDragEnd={handleDragEnd}
+              onMove={moveQuestion}
+              onRemove={removeQuestion}
+              onUpdate={updateQuestion}
+              onAddOption={addOption}
+              onRemoveOption={removeOption}
+              onUpdateOption={updateOption}
+            />
+          ))}
         </div>
 
         <div className="flex gap-3">
@@ -685,7 +793,6 @@ const CreateSurvey = () => {
                 toast.success('Umfrage aktualisiert');
                 navigate('/admin');
               } catch (error) {
-                console.error('[CreateSurvey] Force save error:', error);
                 toast.error('Fehler beim Speichern');
               } finally { setSaving(false); }
             }} className="bg-amber-600 hover:bg-amber-700">
