@@ -44,12 +44,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: data.role,
         approved: data.approved,
         first_name: data.first_name,
-        last_name: data.last_name
+        last_name: data.last_name,
       });
       setProfile(data as Profile);
-      
+
       // Update last_login_at
-      console.log('[AuthContext] Updating last_login_at');
       const { error: updateError } = await supabase
         .from('profiles')
         .update({ last_login_at: new Date().toISOString() })
