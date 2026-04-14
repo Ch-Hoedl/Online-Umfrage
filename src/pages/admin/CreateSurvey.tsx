@@ -312,22 +312,25 @@ const CreateSurvey = () => {
     await saveQuestions(survey.id, questions);
   };
 
-  const updateSurvey = async (surveyId: string) => {
+  const updateSurvey = async (surveyId: string, forceOverwrite = false) => {
     const { data: currentData, error: fetchError } = await supabase.from('surveys').select('version, title, description').eq('id', surveyId).single();
     if (fetchError) throw fetchError;
 
-    if (currentData.version !== currentVersion) {
-      setConflictData({ currentTitle: currentData.title, currentDescription: currentData.description, myTitle: title, myDescription: description });
+    const dbVersion = currentData.version ?? 1;
+
+    if (!forceOverwrite && dbVersion !== currentVersion) {
+      setConflictData({ currentTitle: currentData.title, currentDescription: currentData.description, myTitle: title, myDescription: description, dbVersion });
       setShowConflictDialog(true);
       throw new Error('VERSION_CONFLICT');
     }
 
+    const newVersion = dbVersion + 1;
     const { error } = await supabase.from('surveys')
-      .update({ title, description, updated_at: new Date().toISOString(), visibility, allow_copy: allowCopy, allow_edit: allowEdit, version: currentVersion + 1, editing_by: null, editing_since: null, last_modified_by: user?.id })
-      .eq('id', surveyId).eq('version', currentVersion);
+      .update({ title, description, updated_at: new Date().toISOString(), visibility, allow_copy: allowCopy, allow_edit: allowEdit, version: newVersion, editing_by: null, editing_since: null, last_modified_by: user?.id })
+      .eq('id', surveyId);
     if (error) throw error;
 
-    setCurrentVersion(currentVersion + 1);
+    setCurrentVersion(newVersion);
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
     if (delErr) throw delErr;
     await saveQuestions(surveyId, questions);
@@ -673,7 +676,19 @@ const CreateSurvey = () => {
             <Button variant="outline" onClick={() => { setShowConflictDialog(false); if (editId) loadExistingSurvey(editId); }}>
               Aktuelle Version laden
             </Button>
-            <Button onClick={() => { setShowConflictDialog(false); if (editId) { setCurrentVersion(currentVersion + 1); handleSave(); } }} className="bg-amber-600 hover:bg-amber-700">
+            <Button onClick={async () => {
+              setShowConflictDialog(false);
+              if (!editId) return;
+              setSaving(true);
+              try {
+                await updateSurvey(editId, true);
+                toast.success('Umfrage aktualisiert');
+                navigate('/admin');
+              } catch (error) {
+                console.error('[CreateSurvey] Force save error:', error);
+                toast.error('Fehler beim Speichern');
+              } finally { setSaving(false); }
+            }} className="bg-amber-600 hover:bg-amber-700">
               Meine Version überschreiben
             </Button>
           </DialogFooter>
