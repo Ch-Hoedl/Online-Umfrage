@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { Profile } from '@/integrations/supabase/types';
@@ -25,60 +25,70 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  // Track the userId we last started loading for – avoids stale updates
+  const loadingForRef = useRef<string | null>(null);
 
   const loadProfile = async (userId: string) => {
+    loadingForRef.current = userId;
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
+
+      // Ignore result if we've since moved on to a different user
+      if (loadingForRef.current !== userId) return;
+
       if (error) throw error;
       setProfile(data as Profile);
 
-      // Update last_login_at in background – don't await
-      supabase.from('profiles').update({ last_login_at: new Date().toISOString() }).eq('id', userId);
-    } catch (err) {
+      // Update last_login_at in background
+      supabase.from('profiles')
+        .update({ last_login_at: new Date().toISOString() })
+        .eq('id', userId);
+    } catch (err: any) {
+      // Ignore aborts (React StrictMode double-invoke, unmount races)
+      if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR') return;
       console.error('[AuthContext] Failed to load profile:', err);
-      setProfile(null);
+      if (loadingForRef.current === userId) setProfile(null);
     }
   };
 
   useEffect(() => {
-    let mounted = true;
-
-    // Get initial session first, then subscribe to changes
+    // Load initial session
     supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!mounted) return;
-      const u = session?.user ?? null;
-      setUser(u);
-      if (u) await loadProfile(u.id);
-      setLoading(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!mounted) return;
-      // Skip INITIAL_SESSION – handled by getSession above
-      // Skip TOKEN_REFRESHED – no need to reload profile
-      if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') return;
-
       const u = session?.user ?? null;
       setUser(u);
       if (u) {
         await loadProfile(u.id);
-      } else {
-        setProfile(null);
       }
       setLoading(false);
     });
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
+    // Listen for auth changes (skip events that don't need profile reload)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') return;
+
+      const u = session?.user ?? null;
+      setUser(u);
+
+      if (u) {
+        setLoading(true);
+        await loadProfile(u.id);
+        setLoading(false);
+      } else {
+        loadingForRef.current = null;
+        setProfile(null);
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const signOut = async () => {
+    loadingForRef.current = null;
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
