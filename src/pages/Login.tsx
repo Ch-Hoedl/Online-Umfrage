@@ -2,7 +2,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { BarChart3, CheckCircle2 } from 'lucide-react';
+import { BarChart3, CheckCircle2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,83 +10,36 @@ import { toast } from 'sonner';
 
 const Login = () => {
   const navigate = useNavigate();
-  const { user, profile } = useAuth();
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const { user, profile, loading: authLoading } = useAuth();
 
-  // Login fields
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
-  // Sign up fields
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [signUpEmail, setSignUpEmail] = useState('');
   const [signUpPassword, setSignUpPassword] = useState('');
 
+  // Redirect once auth is resolved
   useEffect(() => {
-    console.log('[Login] useEffect - user:', user?.email, 'profile:', profile, 'approved:', profile?.approved, 'loading:', loading);
-
-    if (user && profile) {
-      if (profile.approved) {
-        console.log('[Login] User approved, navigating to /admin');
-        navigate('/admin');
-      } else {
-        console.log('[Login] User not approved, showing pending message');
-        setLoading(false);
-      }
-    } else if (user && !profile) {
-      console.log('[Login] User exists but profile not loaded yet, waiting...');
-      const timeout = setTimeout(() => {
-        console.error('[Login] Profile loading timeout - forcing loading state to false');
-        setLoading(false);
-        toast.error('Fehler beim Laden des Profils. Bitte versuchen Sie es erneut.');
-      }, 5000);
-      return () => clearTimeout(timeout);
-    } else {
-      console.log('[Login] No user, resetting loading state');
-      setLoading(false);
+    if (authLoading) return;
+    if (user && profile?.approved) {
+      navigate('/admin');
     }
-  }, [user, profile, navigate]);
+  }, [authLoading, user, profile, navigate]);
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email || !password) { toast.error('Bitte füllen Sie alle Felder aus'); return; }
-    setLoading(true);
-    try {
-      console.log('[Login] Attempting login for:', email);
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) { console.error('[Login] Auth error:', error); throw error; }
-      console.log('[Login] Login successful, user:', data.user?.email);
-    } catch (error: any) {
-      console.error('[Login] Login error:', error);
-      toast.error(error.message || 'Fehler beim Anmelden');
-      setLoading(false);
-    }
-  };
+  // Still loading auth state – show spinner
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
+        <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+      </div>
+    );
+  }
 
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!firstName.trim() || !lastName.trim() || !signUpEmail || !signUpPassword) {
-      toast.error('Bitte füllen Sie alle Felder aus'); return;
-    }
-    if (signUpPassword.length < 6) { toast.error('Das Passwort muss mindestens 6 Zeichen lang sein'); return; }
-    setLoading(true);
-    try {
-      const { data, error } = await supabase.auth.signUp({
-        email: signUpEmail,
-        password: signUpPassword,
-        options: { data: { first_name: firstName.trim(), last_name: lastName.trim() } },
-      });
-      if (error) throw error;
-      if (data.user) toast.success('Registrierung erfolgreich! Warten Sie auf die Freischaltung.');
-    } catch (error: any) {
-      console.error('Sign up error:', error);
-      toast.error(error.message || 'Fehler bei der Registrierung');
-    } finally { setLoading(false); }
-  };
-
-  // Logged in but not approved
+  // Logged in but waiting for approval
   if (user && profile && !profile.approved) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
@@ -104,6 +57,51 @@ const Login = () => {
       </div>
     );
   }
+
+  // User logged in but profile not yet loaded – show spinner (brief moment)
+  if (user && !profile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
+        <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+      </div>
+    );
+  }
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) { toast.error('Bitte füllen Sie alle Felder aus'); return; }
+    setSubmitting(true);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      // Navigation happens via useEffect once profile is loaded
+    } catch (error: any) {
+      toast.error(error.message || 'Fehler beim Anmelden');
+      setSubmitting(false);
+    }
+  };
+
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firstName.trim() || !lastName.trim() || !signUpEmail || !signUpPassword) {
+      toast.error('Bitte füllen Sie alle Felder aus'); return;
+    }
+    if (signUpPassword.length < 6) { toast.error('Das Passwort muss mindestens 6 Zeichen lang sein'); return; }
+    setSubmitting(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: signUpEmail,
+        password: signUpPassword,
+        options: { data: { first_name: firstName.trim(), last_name: lastName.trim() } },
+      });
+      if (error) throw error;
+      if (data.user) toast.success('Registrierung erfolgreich! Warten Sie auf die Freischaltung.');
+    } catch (error: any) {
+      toast.error(error.message || 'Fehler bei der Registrierung');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
@@ -130,14 +128,16 @@ const Login = () => {
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
                 <Label htmlFor="email">E-Mail</Label>
-                <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ihre.email@beispiel.de" required autoComplete="email" className="mt-1" />
+                <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                  placeholder="ihre.email@beispiel.de" required autoComplete="email" className="mt-1" />
               </div>
               <div>
                 <Label htmlFor="password">Passwort</Label>
-                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required autoComplete="current-password" className="mt-1" />
+                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••" required autoComplete="current-password" className="mt-1" />
               </div>
-              <Button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700">
-                {loading ? 'Anmeldung läuft...' : 'Anmelden'}
+              <Button type="submit" disabled={submitting} className="w-full bg-blue-600 hover:bg-blue-700">
+                {submitting ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Anmeldung läuft...</> : 'Anmelden'}
               </Button>
               <button type="button" onClick={() => setIsSignUp(true)} className="w-full text-sm text-blue-600 hover:text-blue-700 underline">
                 Noch kein Konto? Registrieren
@@ -148,24 +148,28 @@ const Login = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label htmlFor="firstName">Vorname *</Label>
-                  <Input id="firstName" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Max" required autoComplete="given-name" className="mt-1" />
+                  <Input id="firstName" value={firstName} onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="Max" required autoComplete="given-name" className="mt-1" />
                 </div>
                 <div>
                   <Label htmlFor="lastName">Nachname *</Label>
-                  <Input id="lastName" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Mustermann" required autoComplete="family-name" className="mt-1" />
+                  <Input id="lastName" value={lastName} onChange={(e) => setLastName(e.target.value)}
+                    placeholder="Mustermann" required autoComplete="family-name" className="mt-1" />
                 </div>
               </div>
               <div>
                 <Label htmlFor="signUpEmail">E-Mail *</Label>
-                <Input id="signUpEmail" type="email" value={signUpEmail} onChange={(e) => setSignUpEmail(e.target.value)} placeholder="ihre.email@beispiel.de" required autoComplete="email" className="mt-1" />
+                <Input id="signUpEmail" type="email" value={signUpEmail} onChange={(e) => setSignUpEmail(e.target.value)}
+                  placeholder="ihre.email@beispiel.de" required autoComplete="email" className="mt-1" />
               </div>
               <div>
                 <Label htmlFor="signUpPassword">Passwort *</Label>
-                <Input id="signUpPassword" type="password" value={signUpPassword} onChange={(e) => setSignUpPassword(e.target.value)} placeholder="••••••••" required autoComplete="new-password" minLength={6} className="mt-1" />
+                <Input id="signUpPassword" type="password" value={signUpPassword} onChange={(e) => setSignUpPassword(e.target.value)}
+                  placeholder="••••••••" required autoComplete="new-password" minLength={6} className="mt-1" />
                 <p className="text-xs text-gray-500 mt-1">Mindestens 6 Zeichen</p>
               </div>
-              <Button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700">
-                {loading ? 'Registrierung läuft...' : 'Registrieren'}
+              <Button type="submit" disabled={submitting} className="w-full bg-blue-600 hover:bg-blue-700">
+                {submitting ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Registrierung läuft...</> : 'Registrieren'}
               </Button>
               <button type="button" onClick={() => setIsSignUp(false)} className="w-full text-sm text-blue-600 hover:text-blue-700 underline">
                 Haben Sie bereits ein Konto? Anmelden

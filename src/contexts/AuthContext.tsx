@@ -28,34 +28,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadProfile = async (userId: string) => {
     try {
-      console.log('[AuthContext] Loading profile for user:', userId);
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
-      if (error) {
-        console.error('[AuthContext] Error loading profile:', error);
-        throw error;
-      }
-      console.log('[AuthContext] Profile loaded successfully:', {
-        id: data.id,
-        email: data.email,
-        role: data.role,
-        approved: data.approved,
-        first_name: data.first_name,
-        last_name: data.last_name,
-      });
+      if (error) throw error;
       setProfile(data as Profile);
 
-      // Update last_login_at
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({ last_login_at: new Date().toISOString() })
-        .eq('id', userId);
-      if (updateError) {
-        console.error('[AuthContext] Error updating last_login_at:', updateError);
-      }
+      // Update last_login_at in background – don't await
+      supabase.from('profiles').update({ last_login_at: new Date().toISOString() }).eq('id', userId);
     } catch (err) {
       console.error('[AuthContext] Failed to load profile:', err);
       setProfile(null);
@@ -63,25 +45,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    // onAuthStateChange fires INITIAL_SESSION immediately with the current session,
-    // so we don't need a separate getSession() call.
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('[AuthContext] Auth state changed:', event, session?.user?.email);
+    let mounted = true;
+
+    // Get initial session first, then subscribe to changes
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!mounted) return;
       const u = session?.user ?? null;
       setUser(u);
-      if (u && event !== 'TOKEN_REFRESHED') {
+      if (u) await loadProfile(u.id);
+      setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return;
+      // Skip INITIAL_SESSION – handled by getSession above
+      // Skip TOKEN_REFRESHED – no need to reload profile
+      if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') return;
+
+      const u = session?.user ?? null;
+      setUser(u);
+      if (u) {
         await loadProfile(u.id);
-      } else if (!u) {
+      } else {
         setProfile(null);
       }
       setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    setUser(null);
     setProfile(null);
     navigate('/login');
   };
