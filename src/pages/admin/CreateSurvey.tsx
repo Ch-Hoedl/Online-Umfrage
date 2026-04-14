@@ -417,6 +417,7 @@ const CreateSurvey = () => {
   useEffect(() => { questionsRef.current = questions; }, [questions]);
 
   const validate = (qs: QuestionData[]): boolean => {
+    console.log('[CreateSurvey] validate called, questions:', qs.length, 'title:', title);
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
     if (qs.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
     if (qs.filter((q) => q.is_category).length > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
@@ -435,6 +436,7 @@ const CreateSurvey = () => {
 
   const handleSave = async () => {
     const qs = questionsRef.current;
+    console.log('[CreateSurvey] handleSave called, questionsRef:', qs.length, 'saving:', saving);
     if (!validate(qs)) return;
     setSaving(true);
     try {
