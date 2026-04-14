@@ -10,13 +10,20 @@ export interface Survey {
   created_at: string;
   updated_at: string;
   published_at?: string | null;
+  visibility: 'private' | 'public';
+  allow_copy: boolean;
+  allow_edit: boolean;
+  version: number;
+  editing_by: string | null;
+  editing_since: string | null;
+  last_modified_by: string | null;
 }
 
 export interface Question {
   id: string;
   survey_id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating' | 'text';
+  question_type: 'single' | 'multiple' | 'rating' | 'text' | 'longtext';
   order_index: number;
   expected_responses?: number;
   max_text_answers?: number | null;
@@ -44,7 +51,10 @@ export interface Profile {
   id: string;
   email: string | null;
   full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
   role: 'user' | 'admin' | 'super_admin';
   approved: boolean;
   created_at: string;
+  last_login_at: string | null;
 }

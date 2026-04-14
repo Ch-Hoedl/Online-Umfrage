@@ -9,7 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AlertTriangle, Plus, Trash2, ArrowLeft, Save, GripVertical, ChevronUp, ChevronDown, MessageSquare, Tag, Users, Lock, Copy, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -66,11 +67,23 @@ const CreateSurvey = () => {
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [maxVotes, setMaxVotes] = useState('');
-  const [expiresAtLocal, setExpiresAtLocal] = useState('');
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(isEditMode);
+  
+  // Template sharing settings
+  const [visibility, setVisibility] = useState<'private' | 'public'>('private');
+  const [allowCopy, setAllowCopy] = useState(true);
+  const [allowEdit, setAllowEdit] = useState(false);
+  const [isOwner, setIsOwner] = useState(true);
+
+  // Version control and edit lock
+  const [currentVersion, setCurrentVersion] = useState(1);
+  const [editingBy, setEditingBy] = useState<string | null>(null);
+  const [editingByName, setEditingByName] = useState<string | null>(null);
+  const [editingSince, setEditingSince] = useState<string | null>(null);
+  const [showConflictDialog, setShowConflictDialog] = useState(false);
+  const [conflictData, setConflictData] = useState<any>(null);
 
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -87,7 +100,81 @@ const CreateSurvey = () => {
     }
   }, [profile]);
 
-  useEffect(() => { if (isEditMode && editId) loadExistingSurvey(editId); }, [editId]);
+  useEffect(() => {
+    if (isEditMode && editId) {
+      loadExistingSurvey(editId);
+      // Set edit lock when opening
+      acquireEditLock(editId);
+    }
+    
+    // Cleanup: release lock when leaving
+    return () => {
+      if (isEditMode && editId) {
+        releaseEditLock(editId);
+      }
+    };
+  }, [editId]);
+
+  // Heartbeat to keep lock alive
+  useEffect(() => {
+    if (!isEditMode || !editId) return;
+    
+    const interval = setInterval(() => {
+      refreshEditLock(editId);
+    }, 5 * 60 * 1000); // Every 5 minutes
+    
+    return () => clearInterval(interval);
+  }, [isEditMode, editId]);
+
+  const acquireEditLock = async (surveyId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      await supabase
+        .from('surveys')
+        .update({
+          editing_by: user.id,
+          editing_since: new Date().toISOString()
+        })
+        .eq('id', surveyId);
+    } catch (error) {
+      console.error('Failed to acquire edit lock:', error);
+    }
+  };
+
+  const releaseEditLock = async (surveyId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      // Only release if we are the current editor
+      await supabase
+        .from('surveys')
+        .update({
+          editing_by: null,
+          editing_since: null
+        })
+        .eq('id', surveyId)
+        .eq('editing_by', user.id);
+    } catch (error) {
+      console.error('Failed to release edit lock:', error);
+    }
+  };
+
+  const refreshEditLock = async (surveyId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      await supabase
+        .from('surveys')
+        .update({
+          editing_since: new Date().toISOString()
+        })
+        .eq('id', surveyId)
+        .eq('editing_by', user.id);
+    } catch (error) {
+      console.error('Failed to refresh edit lock:', error);
+    }
+  };
 
   const loadExistingSurvey = async (surveyId: string) => {
     setLoadingData(true);
@@ -97,10 +184,29 @@ const CreateSurvey = () => {
 
       setTitle(surveyData.title);
       setDescription(surveyData.description || '');
-      if (surveyData.max_votes) setMaxVotes(String(surveyData.max_votes));
-      if (surveyData.expires_at) {
-        const d = new Date(surveyData.expires_at);
-        setExpiresAtLocal(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
+      
+      // Load visibility settings
+      setVisibility(surveyData.visibility || 'private');
+      setAllowCopy(surveyData.allow_copy ?? true);
+      setAllowEdit(surveyData.allow_edit ?? false);
+      setIsOwner(surveyData.created_by === user?.id);
+
+      // Load version control data
+      setCurrentVersion(surveyData.version || 1);
+      setEditingBy(surveyData.editing_by);
+      setEditingSince(surveyData.editing_since);
+
+      // Load editor's name if someone else is editing
+      if (surveyData.editing_by && surveyData.editing_by !== user?.id) {
+        const { data: editorProfile } = await supabase
+          .from('profiles')
+          .select('first_name, last_name')
+          .eq('id', surveyData.editing_by)
+          .single();
+        
+        if (editorProfile) {
+          setEditingByName(`${editorProfile.first_name || ''} ${editorProfile.last_name || ''}`.trim() || 'Unbekannter Benutzer');
+        }
       }
 
       const { data: questionsData, error: questionsError } = await supabase
@@ -243,14 +349,6 @@ const CreateSurvey = () => {
 
   const validate = (): boolean => {
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
-    if (!expiresAtLocal.trim()) { toast.error('Bitte geben Sie ein Ablaufdatum an'); return false; }
-    const expiresAtDate = new Date(expiresAtLocal);
-    if (Number.isNaN(expiresAtDate.getTime())) { toast.error('Ungültiges Ablaufdatum'); return false; }
-    if (expiresAtDate.getTime() <= Date.now()) { toast.error('Das Ablaufdatum muss in der Zukunft liegen'); return false; }
-    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
-    if (maxVotes.trim() && (!Number.isFinite(parsedMaxVotes) || (parsedMaxVotes ?? 0) < 1)) {
-      toast.error('Das Stimmen-Limit muss ≥ 1 sein'); return false;
-    }
     if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
     const categoryCount = questions.filter((q) => q.is_category).length;
     if (categoryCount > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
@@ -260,7 +358,7 @@ const CreateSurvey = () => {
         const m = Number(q.text_max_answers);
         if (!Number.isFinite(m) || m < 1 || m > 10) { toast.error('Max. Antworten muss zwischen 1 und 10 liegen'); return false; }
       }
-      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.options.some((o) => !o.text.trim())) {
+      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext' && q.options.some((o) => !o.text.trim())) {
         toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false;
       }
     }
@@ -272,38 +370,109 @@ const CreateSurvey = () => {
   const handleSave = async () => {
     if (!validate()) return;
     setSaving(true);
-    const expiresAt = new Date(expiresAtLocal).toISOString();
-    const parsedMaxVotes = maxVotes.trim() ? Number.parseInt(maxVotes, 10) : null;
     try {
-      if (isEditMode && editId) await updateSurvey(editId, expiresAt, parsedMaxVotes);
-      else await createSurvey(expiresAt, parsedMaxVotes);
+      if (isEditMode && editId) await updateSurvey(editId);
+      else await createSurvey();
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (error) {
-      console.error(error);
-      toast.error(isEditMode ? 'Fehler beim Aktualisieren' : 'Fehler beim Erstellen');
+      console.error('[CreateSurvey] Save error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
+      
+      // Don't show error toast for version conflicts (dialog is shown instead)
+      if (errorMessage !== 'VERSION_CONFLICT') {
+        toast.error(isEditMode ? `Fehler beim Aktualisieren: ${errorMessage}` : `Fehler beim Erstellen: ${errorMessage}`);
+      }
     } finally { setSaving(false); }
   };
 
-  const createSurvey = async (expiresAt: string, parsedMaxVotes: number | null) => {
+  const createSurvey = async () => {
     const { data: survey, error } = await supabase
       .from('surveys')
-      .insert({ title, description, created_by: user?.id, status: 'draft', is_active: false, max_votes: parsedMaxVotes, expires_at: expiresAt })
+      .insert({
+        title,
+        description,
+        created_by: user?.id,
+        status: 'draft',
+        is_active: false,
+        visibility,
+        allow_copy: allowCopy,
+        allow_edit: allowEdit,
+        last_modified_by: user?.id
+      })
       .select().single();
     if (error) throw error;
     await saveQuestions(survey.id, questions);
   };
 
-  const updateSurvey = async (surveyId: string, expiresAt: string, parsedMaxVotes: number | null) => {
+  const updateSurvey = async (surveyId: string) => {
+    console.log('[CreateSurvey] Updating survey:', surveyId);
+    
+    // Check current version first (optimistic locking)
+    const { data: currentData, error: fetchError } = await supabase
+      .from('surveys')
+      .select('version, title, description')
+      .eq('id', surveyId)
+      .single();
+    
+    if (fetchError) {
+      console.error('[CreateSurvey] Error fetching current version:', fetchError);
+      throw fetchError;
+    }
+
+    // Version conflict detected
+    if (currentData.version !== currentVersion) {
+      console.warn('[CreateSurvey] Version conflict detected:', {
+        expected: currentVersion,
+        actual: currentData.version
+      });
+      
+      setConflictData({
+        currentTitle: currentData.title,
+        currentDescription: currentData.description,
+        myTitle: title,
+        myDescription: description
+      });
+      setShowConflictDialog(true);
+      throw new Error('VERSION_CONFLICT');
+    }
+
+    // Update with version increment
     const { error } = await supabase.from('surveys')
-      .update({ title, description, max_votes: parsedMaxVotes, expires_at: expiresAt, updated_at: new Date().toISOString() })
-      .eq('id', surveyId);
-    if (error) throw error;
+      .update({
+        title,
+        description,
+        updated_at: new Date().toISOString(),
+        visibility,
+        allow_copy: allowCopy,
+        allow_edit: allowEdit,
+        version: currentVersion + 1,
+        editing_by: null,
+        editing_since: null,
+        last_modified_by: user?.id
+      })
+      .eq('id', surveyId)
+      .eq('version', currentVersion); // Double-check version
+    
+    if (error) {
+      console.error('[CreateSurvey] Error updating survey:', error);
+      throw error;
+    }
+
+    // Update local version
+    setCurrentVersion(currentVersion + 1);
 
     // Delete old questions (cascade deletes options and responses)
+    console.log('[CreateSurvey] Deleting old questions for survey:', surveyId);
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
-    if (delErr) throw delErr;
+    if (delErr) {
+      console.error('[CreateSurvey] Error deleting questions:', delErr);
+      throw delErr;
+    }
+    
+    console.log('[CreateSurvey] Saving new questions');
     await saveQuestions(surveyId, questions);
+    console.log('[CreateSurvey] Survey update complete');
   };
 
   const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
@@ -332,6 +501,8 @@ const CreateSurvey = () => {
         // Store meta-option for legacy compatibility
         const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: buildTextMetaOption(Number(question.text_max_answers)), order_index: 9999 });
         if (error) throw error;
+      } else if (question.question_type === 'longtext') {
+        // No options needed for longtext - participants write free text
       } else {
         for (let j = 0; j < question.options.length; j++) {
           const { error } = await supabase.from('options').insert({ question_id: questionData.id, option_text: question.options[j].text, order_index: j });
@@ -380,6 +551,34 @@ const CreateSurvey = () => {
           </div>
         </div>
 
+        {/* Edit Lock Warning */}
+        {isEditMode && editingBy && editingBy !== user?.id && editingByName && (
+          <Card className="mb-6 border-amber-300 bg-amber-50">
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                  <Users className="w-5 h-5 text-amber-600" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-amber-900 mb-1">
+                    ⚠️ Wird gerade bearbeitet
+                  </h3>
+                  <p className="text-sm text-amber-800">
+                    <strong>{editingByName}</strong> bearbeitet diese Vorlage gerade.
+                    {editingSince && (() => {
+                      const minutes = Math.floor((Date.now() - new Date(editingSince).getTime()) / 60000);
+                      return minutes > 0 ? ` (seit ${minutes} Minute${minutes === 1 ? '' : 'n'})` : ' (gerade eben)';
+                    })()}
+                  </p>
+                  <p className="text-sm text-amber-700 mt-2">
+                    Sie können trotzdem Änderungen vornehmen, aber es kann zu Konflikten kommen, wenn beide gleichzeitig speichern.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Survey Details */}
         <Card className="mb-6">
           <CardHeader><CardTitle>Umfrage-Details</CardTitle></CardHeader>
@@ -392,18 +591,75 @@ const CreateSurvey = () => {
               <Label htmlFor="description">Beschreibung</Label>
               <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optionale Beschreibung" rows={3} />
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="maxVotes">Stimmen-Limit (optional)</Label>
-                <Input id="maxVotes" type="number" min={1} value={maxVotes} onChange={(e) => setMaxVotes(e.target.value)} placeholder="z.B. 100" />
-              </div>
-              <div>
-                <Label htmlFor="expiresAt">Ablaufdatum *</Label>
-                <Input id="expiresAt" type="datetime-local" value={expiresAtLocal} onChange={(e) => setExpiresAtLocal(e.target.value)} />
-              </div>
-            </div>
           </CardContent>
         </Card>
+
+        {/* Template Sharing Settings - Only for owners */}
+        {isOwner && (
+          <Card className="mb-6 border-purple-200">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-purple-600" />
+                Vorlagen-Freigabe
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <Label htmlFor="visibility">Sichtbarkeit</Label>
+                <Select value={visibility} onValueChange={(v: 'private' | 'public') => setVisibility(v)}>
+                  <SelectTrigger id="visibility">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="private">
+                      <div className="flex items-center gap-2">
+                        <Lock className="w-4 h-4" />
+                        <span>Privat - Nur ich kann diese Vorlage sehen</span>
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="public">
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4" />
+                        <span>Öffentlich - Alle Benutzer können diese Vorlage sehen</span>
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {visibility === 'public' && (
+                <div className="space-y-3 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                  <p className="text-sm font-medium text-purple-900">Berechtigungen für andere Benutzer:</p>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="allowCopy"
+                      checked={allowCopy}
+                      onCheckedChange={(checked) => setAllowCopy(checked as boolean)}
+                    />
+                    <Label htmlFor="allowCopy" className="text-sm cursor-pointer">
+                      Andere dürfen diese Vorlage kopieren und verwenden
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="allowEdit"
+                      checked={allowEdit}
+                      onCheckedChange={(checked) => setAllowEdit(checked as boolean)}
+                    />
+                    <Label htmlFor="allowEdit" className="text-sm cursor-pointer">
+                      Andere dürfen diese Vorlage bearbeiten
+                    </Label>
+                  </div>
+                  {allowEdit && (
+                    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                      ⚠️ Achtung: Wenn Sie anderen Benutzern Bearbeitungsrechte geben, können diese die Vorlage dauerhaft verändern.
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {questions.length > 0 && (
           <p className="text-sm text-gray-500 mb-3 flex items-center gap-1">
@@ -470,6 +726,7 @@ const CreateSurvey = () => {
                           <SelectItem value="multiple">Mehrfachauswahl</SelectItem>
                           <SelectItem value="rating">Bewertung (1-5)</SelectItem>
                           <SelectItem value="text">Offene Frage (Begriffe)</SelectItem>
+                          <SelectItem value="longtext">Offene Frage (Freier Text)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -484,7 +741,7 @@ const CreateSurvey = () => {
                       </div>
                     )}
 
-                    {question.question_type !== 'rating' && question.question_type !== 'text' && (
+                    {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && (
                       <div>
                         <Label>Antwortmöglichkeiten *</Label>
                         <div className="space-y-2 mt-2">
@@ -507,6 +764,10 @@ const CreateSurvey = () => {
 
                     {question.question_type === 'rating' && (
                       <p className="text-sm text-gray-600">Für Bewertungen werden automatisch die Optionen 1–5 angelegt.</p>
+                    )}
+
+                    {question.question_type === 'longtext' && (
+                      <p className="text-sm text-gray-600">Teilnehmer können mit bis zu 2048 Zeichen frei antworten.</p>
                     )}
 
                     {/* Checkboxes */}
@@ -575,6 +836,101 @@ const CreateSurvey = () => {
           </Button>
         </div>
       </div>
+
+      {/* Conflict Resolution Dialog */}
+      <Dialog open={showConflictDialog} onOpenChange={setShowConflictDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="w-6 h-6" />
+              Konflikt beim Speichern
+            </DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 text-sm">
+                <p className="text-gray-700">
+                  Während Sie diese Vorlage bearbeitet haben, hat jemand anderes Änderungen gespeichert.
+                </p>
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <h4 className="font-semibold text-blue-900 mb-2">📝 Ihre Änderungen</h4>
+                    <div className="text-xs space-y-1">
+                      <p><strong>Titel:</strong> {conflictData?.myTitle}</p>
+                      <p><strong>Beschreibung:</strong> {conflictData?.myDescription || '(leer)'}</p>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <h4 className="font-semibold text-green-900 mb-2">💾 Aktuelle Version</h4>
+                    <div className="text-xs space-y-1">
+                      <p><strong>Titel:</strong> {conflictData?.currentTitle}</p>
+                      <p><strong>Beschreibung:</strong> {conflictData?.currentDescription || '(leer)'}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowConflictDialog(false);
+                navigate('/admin');
+              }}
+              className="w-full sm:w-auto"
+            >
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Abbrechen und zurück
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                setShowConflictDialog(false);
+                if (editId) {
+                  await loadExistingSurvey(editId);
+                  toast.info('Aktuelle Version wurde geladen. Bitte nehmen Sie Ihre Änderungen erneut vor.');
+                }
+              }}
+              className="w-full sm:w-auto"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Neu laden und erneut bearbeiten
+            </Button>
+            <Button
+              onClick={async () => {
+                setShowConflictDialog(false);
+                try {
+                  // Save as new copy
+                  const { data: survey, error } = await supabase
+                    .from('surveys')
+                    .insert({
+                      title: `${title} (Kopie)`,
+                      description,
+                      created_by: user?.id,
+                      status: 'draft',
+                      is_active: false,
+                      visibility: 'private',
+                      allow_copy: true,
+                      allow_edit: false
+                    })
+                    .select().single();
+                  
+                  if (error) throw error;
+                  await saveQuestions(survey.id, questions);
+                  toast.success('Ihre Änderungen wurden als neue Vorlage gespeichert');
+                  navigate('/admin');
+                } catch (error) {
+                  console.error('Error saving as copy:', error);
+                  toast.error('Fehler beim Speichern der Kopie');
+                }
+              }}
+              className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700"
+            >
+              <Copy className="w-4 h-4 mr-2" />
+              Als neue Kopie speichern
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

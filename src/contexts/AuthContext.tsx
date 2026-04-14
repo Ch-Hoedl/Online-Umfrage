@@ -28,27 +28,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadProfile = async (userId: string) => {
     try {
+      console.log('[AuthContext] Loading profile for user:', userId);
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
-      if (error) throw error;
+      if (error) {
+        console.error('[AuthContext] Error loading profile:', error);
+        throw error;
+      }
+      console.log('[AuthContext] Profile loaded successfully:', {
+        id: data.id,
+        email: data.email,
+        role: data.role,
+        approved: data.approved,
+        first_name: data.first_name,
+        last_name: data.last_name
+      });
       setProfile(data as Profile);
-    } catch {
+      
+      // Update last_login_at
+      console.log('[AuthContext] Updating last_login_at');
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ last_login_at: new Date().toISOString() })
+        .eq('id', userId);
+      if (updateError) {
+        console.error('[AuthContext] Error updating last_login_at:', updateError);
+      }
+    } catch (err) {
+      console.error('[AuthContext] Failed to load profile:', err);
       setProfile(null);
     }
   };
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
+      console.log('[AuthContext] Initial session:', session?.user?.email);
       const u = session?.user ?? null;
       setUser(u);
       if (u) await loadProfile(u.id);
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('[AuthContext] Auth state changed:', event, session?.user?.email);
       const u = session?.user ?? null;
       setUser(u);
       if (u) {
