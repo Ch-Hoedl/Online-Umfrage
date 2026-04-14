@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
@@ -46,7 +46,149 @@ function isExpired(iso: string | null | undefined): boolean {
   return new Date(iso) < new Date();
 }
 
-// ── component ─────────────────────────────────────────────────────────────────
+// ── sub-components (defined outside Dashboard to avoid re-creation on render) ─
+
+interface DraftCardProps {
+  survey: Survey;
+  onEdit: (id: string) => void;
+  onDuplicate: (survey: Survey) => void;
+  onDelete: (survey: Survey) => void;
+  onPublish: (survey: Survey) => void;
+}
+
+const SurveyCardDraft = memo(({ survey, onEdit, onDuplicate, onDelete, onPublish }: DraftCardProps) => (
+  <Card className="hover:shadow-lg transition-all border-2 border-dashed border-amber-200 bg-amber-50/30">
+    <CardHeader>
+      <div className="flex justify-between items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <FileText className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
+          </div>
+          <CardDescription className="line-clamp-2">
+            {survey.description || 'Keine Beschreibung'}
+          </CardDescription>
+        </div>
+        <Badge className="bg-amber-100 text-amber-700 border-amber-300 flex-shrink-0">Vorlage</Badge>
+      </div>
+    </CardHeader>
+    <CardContent className="space-y-3">
+      <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+        <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+        <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp(survey.updated_at || survey.created_at)}</span></span>
+      </div>
+      <div className="flex gap-2">
+        <Button onClick={() => onEdit(survey.id)} variant="outline" className="flex-1 border-amber-300 hover:bg-amber-50">
+          <Edit className="w-4 h-4 mr-2" />Bearbeiten
+        </Button>
+        <Button onClick={() => onDuplicate(survey)} variant="outline" size="icon" title="Duplizieren">
+          <Copy className="w-4 h-4" />
+        </Button>
+        <Button onClick={() => onDelete(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen">
+          <Trash2 className="w-4 h-4" />
+        </Button>
+      </div>
+      <Button onClick={() => onPublish(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
+        <Rocket className="w-4 h-4 mr-2" />Produktiv schalten
+      </Button>
+    </CardContent>
+  </Card>
+));
+
+interface PublishedCardProps {
+  survey: Survey;
+  responseCount: number | null;
+  onResults: (id: string) => void;
+  onPreview: (id: string) => void;
+  onShare: (survey: Survey) => void;
+  onDuplicate: (survey: Survey) => void;
+  onDelete: (survey: Survey) => void;
+}
+
+const SurveyCardPublished = memo(({ survey, responseCount, onResults, onPreview, onShare, onDuplicate, onDelete }: PublishedCardProps) => {
+  const expired = isExpired(survey.expires_at);
+  return (
+    <Card className="hover:shadow-lg transition-all border-2 border-green-200 bg-green-50/20">
+      <CardHeader>
+        <div className="flex justify-between items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <Rocket className="w-4 h-4 text-green-600 flex-shrink-0" />
+              <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
+            </div>
+            <CardDescription className="line-clamp-2">{survey.description || 'Keine Beschreibung'}</CardDescription>
+          </div>
+          <Badge className="bg-green-100 text-green-700 border-green-300 flex-shrink-0">Produktiv</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="flex items-center gap-1.5 text-xs bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+          <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-green-600" />
+          <span className="text-gray-600">Teilnehmer:</span>
+          {responseCount === null
+            ? <span className="text-gray-400 italic">wird geladen…</span>
+            : <span className="font-semibold text-green-700">{responseCount} {responseCount === 1 ? 'Person' : 'Personen'}</span>}
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+          <CalendarClock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
+          <span>Produktiv seit: <span className="font-medium text-gray-700">{formatTimestamp(survey.published_at)}</span></span>
+        </div>
+        {survey.expires_at && (
+          <div className={`flex items-center gap-1.5 text-xs rounded-lg px-3 py-2 ${expired ? 'bg-red-50 border border-red-100' : 'bg-blue-50 border border-blue-100'}`}>
+            <CalendarX2 className={`w-3.5 h-3.5 flex-shrink-0 ${expired ? 'text-red-500' : 'text-blue-500'}`} />
+            <span className={expired ? 'text-red-700' : 'text-gray-600'}>
+              {expired ? 'Abgelaufen am: ' : 'Läuft ab am: '}
+              <span className="font-medium">{formatDateOnly(survey.expires_at)}</span>
+            </span>
+            {expired && <span className="ml-auto bg-red-100 text-red-700 text-xs px-1.5 py-0.5 rounded-full font-semibold">Abgelaufen</span>}
+          </div>
+        )}
+        <div className="flex gap-2 pt-1">
+          <Button onClick={() => onResults(survey.id)} variant="outline" className="flex-1 border-green-300 hover:bg-green-50">
+            <Eye className="w-4 h-4 mr-2" />Auswertung
+          </Button>
+          <Button onClick={() => onPreview(survey.id)} variant="outline" size="icon" title="Vorschau" className="border-blue-300 hover:bg-blue-50 text-blue-600">
+            <ScanEye className="w-4 h-4" />
+          </Button>
+          <Button onClick={() => onShare(survey)} variant="outline" size="icon" title="Teilen / QR-Code" className="border-green-300 hover:bg-green-50">
+            <QrCode className="w-4 h-4" />
+          </Button>
+          <Button onClick={() => onDuplicate(survey)} variant="outline" size="icon" title="Duplizieren">
+            <Copy className="w-4 h-4" />
+          </Button>
+          <Button onClick={() => onDelete(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen">
+            <Trash2 className="w-4 h-4" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+          <Lock className="w-3 h-3 flex-shrink-0" />
+          <span>Gesperrt – kann nicht mehr bearbeitet werden</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+});
+
+const EmptyState = memo(({ mode, onCreate }: { mode: 'draft' | 'published'; onCreate?: () => void }) => (
+  <Card className="border-2 border-dashed col-span-full">
+    <CardContent className="flex flex-col items-center justify-center py-16">
+      {mode === 'draft' ? <FileText className="w-16 h-16 text-amber-400 mb-4" /> : <Rocket className="w-16 h-16 text-green-400 mb-4" />}
+      <h3 className="text-xl font-semibold text-gray-900 mb-2">
+        {mode === 'draft' ? 'Keine Vorlagen vorhanden' : 'Keine produktiven Umfragen'}
+      </h3>
+      <p className="text-gray-600 mb-6 text-center max-w-sm">
+        {mode === 'draft' ? 'Erstellen Sie eine neue Vorlage und gestalten Sie Ihre Umfrage.' : 'Schalten Sie eine Vorlage produktiv, um sie mit Teilnehmern zu teilen.'}
+      </p>
+      {mode === 'draft' && onCreate && (
+        <Button onClick={onCreate} className="bg-blue-600 hover:bg-blue-700">
+          <Plus className="w-5 h-5 mr-2" />Neue Vorlage erstellen
+        </Button>
+      )}
+    </CardContent>
+  </Card>
+));
+
+// ── main component ─────────────────────────────────────────────────────────────
 
 const Dashboard = () => {
   const [surveys, setSurveys] = useState<Survey[]>([]);
@@ -67,7 +209,6 @@ const Dashboard = () => {
   const [shareSurveyTitle, setShareSurveyTitle] = useState<string>('');
 
   const navigate = useNavigate();
-  // Use profile from AuthContext — no extra DB call needed
   const { signOut, user, profile } = useAuth();
 
   const drafts = useMemo(() => surveys.filter((s) => s.status === 'draft'), [surveys]);
@@ -77,7 +218,6 @@ const Dashboard = () => {
     loadSurveys();
   }, []);
 
-  // Load pending count only for super_admins
   useEffect(() => {
     if (profile?.role === 'super_admin') {
       loadPendingCount();
@@ -102,7 +242,6 @@ const Dashboard = () => {
       const { data, error } = await supabase.from('surveys').select('*').order('created_at', { ascending: false });
       if (error) throw error;
       setSurveys(data || []);
-
       const publishedSurveys = (data || []).filter((s: Survey) => s.status === 'published');
       if (publishedSurveys.length > 0) loadResponseCounts(publishedSurveys.map((s: Survey) => s.id));
     } catch { toast.error('Fehler beim Laden der Umfragen'); }
@@ -114,11 +253,9 @@ const Dashboard = () => {
       const { data: questions } = await supabase
         .from('questions').select('id, survey_id').in('survey_id', surveyIds);
       if (!questions || questions.length === 0) return;
-
       const qIds = questions.map((q: any) => q.id);
       const { data: responses } = await supabase
         .from('responses').select('question_id, participant_id').in('question_id', qIds);
-
       const counts: { [surveyId: string]: Set<string> } = {};
       for (const q of questions) {
         if (!counts[q.survey_id]) counts[q.survey_id] = new Set();
@@ -127,7 +264,6 @@ const Dashboard = () => {
         const q = questions.find((q: any) => q.id === r.question_id);
         if (q) counts[q.survey_id]?.add(r.participant_id);
       }
-
       const result: { [surveyId: string]: number } = {};
       for (const [sid, set] of Object.entries(counts)) result[sid] = set.size;
       setResponseCounts(result);
@@ -171,7 +307,6 @@ const Dashboard = () => {
     setPublishing(true);
     try {
       const now = new Date().toISOString();
-
       const { data: newSurvey, error: surveyError } = await supabase
         .from('surveys')
         .insert({
@@ -193,7 +328,6 @@ const Dashboard = () => {
 
       const oldQuestions = (questions || []) as Question[];
       const qIdMap = new Map<string, string>();
-
       for (const q of oldQuestions) {
         const { data: iq, error: iqErr } = await supabase
           .from('questions')
@@ -224,7 +358,6 @@ const Dashboard = () => {
           if (iErr) throw iErr;
         }
       }
-
       toast.success('Umfrage ist jetzt produktiv! Die Vorlage bleibt erhalten.');
       loadSurveys();
     } catch (e) { console.error(e); toast.error('Fehler beim Produktivschalten'); }
@@ -258,7 +391,6 @@ const Dashboard = () => {
 
       const oldQuestions = (questions || []) as Question[];
       const qIdMap = new Map<string, string>();
-
       for (const q of oldQuestions) {
         const { data: iq, error: iqErr } = await supabase
           .from('questions')
@@ -303,6 +435,11 @@ const Dashboard = () => {
     setShareSurveyTitle(survey.title);
   };
 
+  const openDuplicateDialog = (survey: Survey) => {
+    setDuplicateSurvey(survey);
+    setDuplicateTitle(`${survey.title} (Kopie)`);
+  };
+
   const downloadQrCode = (containerId: string, title: string) => {
     const svg = document.querySelector(`#${containerId} svg`);
     if (!svg) return;
@@ -337,129 +474,6 @@ const Dashboard = () => {
       </div>
     );
   }
-
-  const SurveyCardDraft = ({ survey }: { survey: Survey }) => (
-    <Card className="hover:shadow-lg transition-all border-2 border-dashed border-amber-200 bg-amber-50/30">
-      <CardHeader>
-        <div className="flex justify-between items-start gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <FileText className="w-4 h-4 text-amber-600 flex-shrink-0" />
-              <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
-            </div>
-            <CardDescription className="line-clamp-2">
-              {survey.description || 'Keine Beschreibung'}
-            </CardDescription>
-          </div>
-          <Badge className="bg-amber-100 text-amber-700 border-amber-300 flex-shrink-0">Vorlage</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-          <Clock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
-          <span>Zuletzt bearbeitet: <span className="font-medium text-gray-700">{formatTimestamp(survey.updated_at || survey.created_at)}</span></span>
-        </div>
-        <div className="flex gap-2">
-          <Button onClick={() => navigate(`/admin/edit/${survey.id}`)} variant="outline" className="flex-1 border-amber-300 hover:bg-amber-50">
-            <Edit className="w-4 h-4 mr-2" />Bearbeiten
-          </Button>
-          <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" size="icon" title="Duplizieren">
-            <Copy className="w-4 h-4" />
-          </Button>
-          <Button onClick={() => openDeleteDialog(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen">
-            <Trash2 className="w-4 h-4" />
-          </Button>
-        </div>
-        <Button onClick={() => setPublishSurvey(survey)} className="w-full bg-blue-600 hover:bg-blue-700">
-          <Rocket className="w-4 h-4 mr-2" />Produktiv schalten
-        </Button>
-      </CardContent>
-    </Card>
-  );
-
-  const SurveyCardPublished = ({ survey }: { survey: Survey }) => {
-    const count = responseCounts[survey.id] ?? null;
-    const expired = isExpired(survey.expires_at);
-    return (
-      <Card className="hover:shadow-lg transition-all border-2 border-green-200 bg-green-50/20">
-        <CardHeader>
-          <div className="flex justify-between items-start gap-2">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1">
-                <Rocket className="w-4 h-4 text-green-600 flex-shrink-0" />
-                <CardTitle className="text-lg truncate">{survey.title}</CardTitle>
-              </div>
-              <CardDescription className="line-clamp-2">{survey.description || 'Keine Beschreibung'}</CardDescription>
-            </div>
-            <Badge className="bg-green-100 text-green-700 border-green-300 flex-shrink-0">Produktiv</Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="flex items-center gap-1.5 text-xs bg-green-50 border border-green-100 rounded-lg px-3 py-2">
-            <UserCheck className="w-3.5 h-3.5 flex-shrink-0 text-green-600" />
-            <span className="text-gray-600">Teilnehmer:</span>
-            {count === null
-              ? <span className="text-gray-400 italic">wird geladen…</span>
-              : <span className="font-semibold text-green-700">{count} {count === 1 ? 'Person' : 'Personen'}</span>}
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-            <CalendarClock className="w-3.5 h-3.5 flex-shrink-0 text-gray-400" />
-            <span>Produktiv seit: <span className="font-medium text-gray-700">{formatTimestamp(survey.published_at)}</span></span>
-          </div>
-          {survey.expires_at && (
-            <div className={`flex items-center gap-1.5 text-xs rounded-lg px-3 py-2 ${expired ? 'bg-red-50 border border-red-100' : 'bg-blue-50 border border-blue-100'}`}>
-              <CalendarX2 className={`w-3.5 h-3.5 flex-shrink-0 ${expired ? 'text-red-500' : 'text-blue-500'}`} />
-              <span className={expired ? 'text-red-700' : 'text-gray-600'}>
-                {expired ? 'Abgelaufen am: ' : 'Läuft ab am: '}
-                <span className="font-medium">{formatDateOnly(survey.expires_at)}</span>
-              </span>
-              {expired && <span className="ml-auto bg-red-100 text-red-700 text-xs px-1.5 py-0.5 rounded-full font-semibold">Abgelaufen</span>}
-            </div>
-          )}
-          <div className="flex gap-2 pt-1">
-            <Button onClick={() => navigate(`/admin/results/${survey.id}`)} variant="outline" className="flex-1 border-green-300 hover:bg-green-50">
-              <Eye className="w-4 h-4 mr-2" />Auswertung
-            </Button>
-            <Button onClick={() => navigate(`/admin/preview/${survey.id}`)} variant="outline" size="icon" title="Vorschau" className="border-blue-300 hover:bg-blue-50 text-blue-600">
-              <ScanEye className="w-4 h-4" />
-            </Button>
-            <Button onClick={() => openShareDialog(survey)} variant="outline" size="icon" title="Teilen / QR-Code" className="border-green-300 hover:bg-green-50">
-              <QrCode className="w-4 h-4" />
-            </Button>
-            <Button onClick={() => { setDuplicateSurvey(survey); setDuplicateTitle(`${survey.title} (Kopie)`); }} variant="outline" size="icon" title="Duplizieren">
-              <Copy className="w-4 h-4" />
-            </Button>
-            <Button onClick={() => openDeleteDialog(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen">
-              <Trash2 className="w-4 h-4" />
-            </Button>
-          </div>
-          <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-            <Lock className="w-3 h-3 flex-shrink-0" />
-            <span>Gesperrt – kann nicht mehr bearbeitet werden</span>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  };
-
-  const EmptyState = ({ mode }: { mode: 'draft' | 'published' }) => (
-    <Card className="border-2 border-dashed col-span-full">
-      <CardContent className="flex flex-col items-center justify-center py-16">
-        {mode === 'draft' ? <FileText className="w-16 h-16 text-amber-400 mb-4" /> : <Rocket className="w-16 h-16 text-green-400 mb-4" />}
-        <h3 className="text-xl font-semibold text-gray-900 mb-2">
-          {mode === 'draft' ? 'Keine Vorlagen vorhanden' : 'Keine produktiven Umfragen'}
-        </h3>
-        <p className="text-gray-600 mb-6 text-center max-w-sm">
-          {mode === 'draft' ? 'Erstellen Sie eine neue Vorlage und gestalten Sie Ihre Umfrage.' : 'Schalten Sie eine Vorlage produktiv, um sie mit Teilnehmern zu teilen.'}
-        </p>
-        {mode === 'draft' && (
-          <Button onClick={() => navigate('/admin/create')} className="bg-blue-600 hover:bg-blue-700">
-            <Plus className="w-5 h-5 mr-2" />Neue Vorlage erstellen
-          </Button>
-        )}
-      </CardContent>
-    </Card>
-  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
@@ -518,13 +532,37 @@ const Dashboard = () => {
 
           <TabsContent value="drafts">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {drafts.length === 0 ? <EmptyState mode="draft" /> : drafts.map((s) => <SurveyCardDraft key={s.id} survey={s} />)}
+              {drafts.length === 0
+                ? <EmptyState mode="draft" onCreate={() => navigate('/admin/create')} />
+                : drafts.map((s) => (
+                  <SurveyCardDraft
+                    key={s.id}
+                    survey={s}
+                    onEdit={(id) => navigate(`/admin/edit/${id}`)}
+                    onDuplicate={openDuplicateDialog}
+                    onDelete={openDeleteDialog}
+                    onPublish={setPublishSurvey}
+                  />
+                ))}
             </div>
           </TabsContent>
 
           <TabsContent value="published">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {published.length === 0 ? <EmptyState mode="published" /> : published.map((s) => <SurveyCardPublished key={s.id} survey={s} />)}
+              {published.length === 0
+                ? <EmptyState mode="published" />
+                : published.map((s) => (
+                  <SurveyCardPublished
+                    key={s.id}
+                    survey={s}
+                    responseCount={responseCounts[s.id] ?? null}
+                    onResults={(id) => navigate(`/admin/results/${id}`)}
+                    onPreview={(id) => navigate(`/admin/preview/${id}`)}
+                    onShare={openShareDialog}
+                    onDuplicate={openDuplicateDialog}
+                    onDelete={openDeleteDialog}
+                  />
+                ))}
             </div>
           </TabsContent>
         </Tabs>
@@ -620,7 +658,14 @@ const Dashboard = () => {
           </DialogHeader>
           <div className="space-y-2">
             <Label htmlFor="dup-title">Name der neuen Vorlage</Label>
-            <Input id="dup-title" value={duplicateTitle} onChange={(e) => setDuplicateTitle(e.target.value)} placeholder="z.B. Mitarbeiterumfrage (Kopie)" autoFocus />
+            <Input
+              id="dup-title"
+              value={duplicateTitle}
+              onChange={(e) => setDuplicateTitle(e.target.value)}
+              placeholder="z.B. Mitarbeiterumfrage (Kopie)"
+              autoFocus
+              onKeyDown={(e) => { if (e.key === 'Enter') handleDuplicate(); }}
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setDuplicateSurvey(null); setDuplicateTitle(''); }} disabled={duplicating}>Abbrechen</Button>
