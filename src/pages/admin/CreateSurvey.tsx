@@ -412,9 +412,10 @@ const CreateSurvey = () => {
       else await doCreate();
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unbekannter Fehler';
+    } catch (err: any) {
+      const msg = err?.message || err?.error_description || JSON.stringify(err) || 'Unbekannter Fehler';
       if (msg !== 'VERSION_CONFLICT') toast.error(`Fehler: ${msg}`);
+      console.error('[CreateSurvey] Save error:', err);
     } finally { setSaving(false); }
   };
 
