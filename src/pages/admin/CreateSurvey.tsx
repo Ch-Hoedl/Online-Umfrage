@@ -60,7 +60,7 @@ interface QuestionCardProps {
   question: QuestionData;
   index: number;
   total: number;
-  categoryTaken: boolean; // true if another question already has is_category=true
+  categoryTaken: boolean;
   onMove: (from: number, to: number) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, field: string, value: unknown) => void;
@@ -226,7 +226,8 @@ const CreateSurvey = () => {
   const [description, setDescription] = useState('');
   const [questions, setQuestions] = useState<QuestionData[]>([]);
   const [saving, setSaving] = useState(false);
-  const [loadingData, setLoadingData] = useState(isEditMode);
+  // Start as false – the effect sets it to true once user is ready
+  const [loadingData, setLoadingData] = useState(false);
 
   const [visibility, setVisibility] = useState<'private' | 'public'>('private');
   const [allowCopy, setAllowCopy] = useState(true);
@@ -242,6 +243,9 @@ const CreateSurvey = () => {
 
   const navigate = useNavigate();
   const { user, profile } = useAuth();
+
+  // Ref to cancel in-flight loadExistingSurvey when component unmounts
+  const loadAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const lockReleasedRef = useRef(false);
 
   useEffect(() => {
@@ -249,35 +253,52 @@ const CreateSurvey = () => {
   }, [profile]);
 
   useEffect(() => {
-    if (!isEditMode || !editId) return;
+    // Wait until user is available before loading
+    if (!isEditMode || !editId || !user?.id) return;
+
+    // Reset abort flag for this mount
+    const abortToken = { cancelled: false };
+    loadAbortRef.current = abortToken;
     lockReleasedRef.current = false;
-    loadExistingSurvey(editId);
-    acquireEditLock(editId);
-    const interval = setInterval(() => refreshEditLock(editId), 5 * 60 * 1000);
-    return () => {
-      clearInterval(interval);
-      if (!lockReleasedRef.current) releaseEditLock(editId);
-    };
-  }, [editId]);
 
-  const acquireEditLock = async (surveyId: string) => {
-    if (!user?.id) return;
-    await supabase.from('surveys').update({ editing_by: user.id, editing_since: new Date().toISOString() }).eq('id', surveyId);
-  };
-  const releaseEditLock = async (surveyId: string) => {
-    if (!user?.id) return;
-    lockReleasedRef.current = true;
-    await supabase.from('surveys').update({ editing_by: null, editing_since: null }).eq('id', surveyId).eq('editing_by', user.id);
-  };
-  const refreshEditLock = async (surveyId: string) => {
-    if (!user?.id) return;
-    await supabase.from('surveys').update({ editing_since: new Date().toISOString() }).eq('id', surveyId).eq('editing_by', user.id);
-  };
-
-  const loadExistingSurvey = async (surveyId: string) => {
     setLoadingData(true);
+    loadExistingSurvey(editId, abortToken);
+    acquireEditLock(editId, user.id);
+
+    const interval = setInterval(() => refreshEditLock(editId, user.id), 5 * 60 * 1000);
+
+    return () => {
+      abortToken.cancelled = true;
+      clearInterval(interval);
+      if (!lockReleasedRef.current) releaseEditLock(editId, user.id);
+    };
+  }, [editId, user?.id]);
+
+  const acquireEditLock = async (surveyId: string, userId: string) => {
+    await supabase.from('surveys')
+      .update({ editing_by: userId, editing_since: new Date().toISOString() })
+      .eq('id', surveyId);
+  };
+
+  const releaseEditLock = async (surveyId: string, userId: string) => {
+    lockReleasedRef.current = true;
+    await supabase.from('surveys')
+      .update({ editing_by: null, editing_since: null })
+      .eq('id', surveyId)
+      .eq('editing_by', userId);
+  };
+
+  const refreshEditLock = async (surveyId: string, userId: string) => {
+    await supabase.from('surveys')
+      .update({ editing_since: new Date().toISOString() })
+      .eq('id', surveyId)
+      .eq('editing_by', userId);
+  };
+
+  const loadExistingSurvey = async (surveyId: string, abortToken: { cancelled: boolean }) => {
     try {
       const { data: s, error: sErr } = await supabase.from('surveys').select('*').eq('id', surveyId).single();
+      if (abortToken.cancelled) return;
       if (sErr) throw sErr;
 
       setTitle(s.title);
@@ -292,16 +313,20 @@ const CreateSurvey = () => {
 
       if (s.editing_by && s.editing_by !== user?.id) {
         const { data: ep } = await supabase.from('profiles').select('first_name, last_name').eq('id', s.editing_by).single();
-        if (ep) setEditingByName(`${ep.first_name || ''} ${ep.last_name || ''}`.trim() || 'Unbekannter Benutzer');
+        if (!abortToken.cancelled && ep) {
+          setEditingByName(`${ep.first_name || ''} ${ep.last_name || ''}`.trim() || 'Unbekannter Benutzer');
+        }
       }
 
       const { data: qs, error: qErr } = await supabase.from('questions').select('*').eq('survey_id', surveyId).order('order_index');
+      if (abortToken.cancelled) return;
       if (qErr) throw qErr;
 
       const qIds = (qs || []).map((q: any) => q.id);
       let opts: any[] = [];
       if (qIds.length > 0) {
         const { data: o, error: oErr } = await supabase.from('options').select('*').in('question_id', qIds).order('order_index');
+        if (abortToken.cancelled) return;
         if (oErr) throw oErr;
         opts = o || [];
       }
@@ -313,7 +338,7 @@ const CreateSurvey = () => {
         const qOpts = optsByQ[q.id] || [];
         const metaOpt = qOpts.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
         const isTextQ = q.question_type === 'multiple' && !!metaOpt;
-        let qType: QuestionType = isTextQ ? 'text' : (q.question_type as QuestionType);
+        const qType: QuestionType = isTextQ ? 'text' : (q.question_type as QuestionType);
         return {
           id: crypto.randomUUID(),
           question_text: q.question_text,
@@ -325,11 +350,12 @@ const CreateSurvey = () => {
         };
       }));
     } catch (err) {
+      if (abortToken.cancelled) return;
       console.error(err);
       toast.error('Fehler beim Laden der Umfrage');
       navigate('/admin');
     } finally {
-      setLoadingData(false);
+      if (!abortToken.cancelled) setLoadingData(false);
     }
   };
 
@@ -387,7 +413,6 @@ const CreateSurvey = () => {
 
   // ── Validation & Save ─────────────────────────────────────────────────────
 
-  // Keep a ref so async save always reads the latest questions without closure issues
   const questionsRef = useRef<QuestionData[]>([]);
   useEffect(() => { questionsRef.current = questions; }, [questions]);
 
@@ -418,6 +443,8 @@ const CreateSurvey = () => {
       } else {
         await doCreate(qs);
       }
+      // Mark lock as released so cleanup doesn't double-release
+      lockReleasedRef.current = true;
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (err: any) {
@@ -453,7 +480,6 @@ const CreateSurvey = () => {
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
     if (delErr) throw delErr;
     await saveQuestions(surveyId, qs);
-    // Update version in state only after everything succeeded
     setCurrentVersion(dbVersion + 1);
   };
 
@@ -466,9 +492,8 @@ const CreateSurvey = () => {
       order_index: i,
       max_text_answers: q.question_type === 'text' ? Number(q.text_max_answers) : null,
     }));
-    console.log('[CreateSurvey] Inserting questions:', JSON.stringify(qRows));
     const { data: inserted, error: qErr } = await supabase.from('questions').insert(qRows).select('id, order_index');
-    if (qErr) { console.error('[CreateSurvey] Question insert error:', JSON.stringify(qErr)); throw qErr; }
+    if (qErr) throw qErr;
     const sorted = [...(inserted || [])].sort((a, b) => a.order_index - b.order_index);
     const optRows: { question_id: string; option_text: string; order_index: number }[] = [];
     for (let i = 0; i < qs.length; i++) {
@@ -486,9 +511,8 @@ const CreateSurvey = () => {
       if (q.is_category && q.question_type === 'single') optRows.push({ question_id: qId, option_text: buildCategoryMetaOption(), order_index: 9997 });
     }
     if (optRows.length > 0) {
-      console.log('[CreateSurvey] Inserting options:', optRows.length);
       const { error: oErr } = await supabase.from('options').insert(optRows);
-      if (oErr) { console.error('[CreateSurvey] Option insert error:', JSON.stringify(oErr)); throw oErr; }
+      if (oErr) throw oErr;
     }
   };
 
@@ -639,13 +663,20 @@ const CreateSurvey = () => {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setShowConflictDialog(false); if (editId) loadExistingSurvey(editId); }}>Aktuelle Version laden</Button>
+            <Button variant="outline" onClick={() => {
+              setShowConflictDialog(false);
+              if (editId) loadExistingSurvey(editId, loadAbortRef.current);
+            }}>Aktuelle Version laden</Button>
             <Button onClick={async () => {
               setShowConflictDialog(false);
               if (!editId) return;
               setSaving(true);
-              try { await doUpdate(editId, true, questionsRef.current); toast.success('Umfrage aktualisiert'); navigate('/admin'); }
-              catch { toast.error('Fehler beim Speichern'); }
+              try {
+                await doUpdate(editId, true, questionsRef.current);
+                lockReleasedRef.current = true;
+                toast.success('Umfrage aktualisiert');
+                navigate('/admin');
+              } catch { toast.error('Fehler beim Speichern'); }
               finally { setSaving(false); }
             }} className="bg-amber-600 hover:bg-amber-700">Meine Version überschreiben</Button>
           </DialogFooter>
