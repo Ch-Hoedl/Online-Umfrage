@@ -447,17 +447,17 @@ const CreateSurvey = () => {
     setSaving(true);
     try {
       if (isEditMode && editId) {
+        console.log('[CreateSurvey] calling doUpdate, editId:', editId, 'currentVersion:', currentVersion);
         await doUpdate(editId, false, qs);
       } else {
         await doCreate(qs);
       }
-      // Mark lock as released so cleanup doesn't double-release
       lockReleasedRef.current = true;
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (err: any) {
       const msg = err?.message || err?.details || err?.hint || JSON.stringify(err) || 'Unbekannter Fehler';
-      console.error('[CreateSurvey] Save error:', JSON.stringify(err));
+      console.error('[CreateSurvey] Save error, msg:', msg, 'full err:', JSON.stringify(err));
       if (msg !== 'VERSION_CONFLICT') toast.error(`Fehler: ${msg}`);
     } finally {
       setSaving(false);
@@ -473,9 +473,12 @@ const CreateSurvey = () => {
   };
 
   const doUpdate = async (surveyId: string, force: boolean, qs: QuestionData[]) => {
+    console.log('[CreateSurvey] doUpdate start, surveyId:', surveyId, 'force:', force);
     const { data: cur, error: fetchErr } = await supabase.from('surveys').select('version, title, description').eq('id', surveyId).single();
+    console.log('[CreateSurvey] doUpdate fetched cur:', JSON.stringify(cur), 'fetchErr:', JSON.stringify(fetchErr));
     if (fetchErr) throw fetchErr;
     const dbVersion = cur.version ?? 1;
+    console.log('[CreateSurvey] doUpdate dbVersion:', dbVersion, 'currentVersion state:', currentVersion, 'force:', force);
     if (!force && dbVersion !== currentVersion) {
       setConflictData({ currentTitle: cur.title, myTitle: title });
       setShowConflictDialog(true);
