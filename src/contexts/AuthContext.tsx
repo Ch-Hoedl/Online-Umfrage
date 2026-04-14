@@ -63,21 +63,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      console.log('[AuthContext] Initial session:', session?.user?.email);
-      const u = session?.user ?? null;
-      setUser(u);
-      if (u) await loadProfile(u.id);
-      setLoading(false);
-    });
-
+    // onAuthStateChange fires INITIAL_SESSION immediately with the current session,
+    // so we don't need a separate getSession() call.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('[AuthContext] Auth state changed:', event, session?.user?.email);
       const u = session?.user ?? null;
       setUser(u);
-      if (u) {
+      if (u && event !== 'TOKEN_REFRESHED') {
         await loadProfile(u.id);
-      } else {
+      } else if (!u) {
         setProfile(null);
       }
       setLoading(false);
