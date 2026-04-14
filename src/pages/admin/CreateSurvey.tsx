@@ -428,9 +428,15 @@ const CreateSurvey = () => {
         if (!Number.isFinite(m) || m < 1 || m > 10) { toast.error('Max. Antworten muss zwischen 1 und 10 liegen'); return false; }
       }
       if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext') {
-        if (q.options.some((o) => !o.text.trim())) { toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false; }
+        const emptyOpt = q.options.find((o) => !o.text.trim());
+        if (emptyOpt) {
+          console.log('[CreateSurvey] validate FAIL: empty option in question', q.question_text, 'type:', q.question_type, 'options:', JSON.stringify(q.options));
+          toast.error('Alle Antwortoptionen müssen ausgefüllt sein');
+          return false;
+        }
       }
     }
+    console.log('[CreateSurvey] validate PASS');
     return true;
   };
 
