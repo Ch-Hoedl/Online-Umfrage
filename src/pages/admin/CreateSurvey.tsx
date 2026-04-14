@@ -92,17 +92,19 @@ const QuestionCard = memo(({
   onMove, onRemove, onUpdate, onAddOption, onRemoveOption, onUpdateOption,
 }: QuestionCardProps) => (
   <div
-    draggable
-    onDragStart={(e) => onDragStart(e, question.id, index)}
     onDragOver={(e) => onDragOver(e, question.id)}
     onDrop={(e) => onDrop(e, question.id)}
-    onDragEnd={onDragEnd}
     className={`transition-all duration-150 ${isDragging ? 'opacity-40 scale-[0.98]' : 'opacity-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 rounded-xl' : ''}`}
   >
     <Card className={`overflow-hidden ${question.is_category ? 'border-purple-300 bg-purple-50/20' : ''}`}>
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <div className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0">
+          <div
+            draggable
+            onDragStart={(e) => onDragStart(e, question.id, index)}
+            onDragEnd={onDragEnd}
+            className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 flex-shrink-0"
+          >
             <GripVertical className="w-5 h-5" />
           </div>
           <CardTitle className="text-lg flex-1 flex items-center gap-2">
@@ -459,26 +461,25 @@ const CreateSurvey = () => {
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent, id: string) => {
+    // Only handle if a drag is actually in progress
+    if (draggedId === null) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverId((prev) => (id !== draggedId ? id : prev));
+    setDragOverId((prev) => (prev === id ? prev : id));
   }, [draggedId]);
 
   const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
     e.preventDefault();
-    setDraggedId((currentDraggedId) => {
-      if (!currentDraggedId || currentDraggedId === targetId) return null;
-      const fromIndex = draggedIndex.current;
-      setQuestions((prev) => {
-        const toIndex = prev.findIndex((q) => q.id === targetId);
-        if (fromIndex === -1 || toIndex === -1) return prev;
-        const next = [...prev];
-        const [moved] = next.splice(fromIndex, 1);
-        next.splice(toIndex, 0, moved);
-        return next;
-      });
-      return null;
+    const fromIndex = draggedIndex.current;
+    setQuestions((prev) => {
+      const toIndex = prev.findIndex((q) => q.id === targetId);
+      if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
     });
+    setDraggedId(null);
     setDragOverId(null);
   }, []);
 
