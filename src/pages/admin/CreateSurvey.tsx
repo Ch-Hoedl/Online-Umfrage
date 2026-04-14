@@ -387,11 +387,15 @@ const CreateSurvey = () => {
 
   // ── Validation & Save ─────────────────────────────────────────────────────
 
-  const validate = (): boolean => {
+  // Keep a ref so async save always reads the latest questions without closure issues
+  const questionsRef = useRef<QuestionData[]>([]);
+  useEffect(() => { questionsRef.current = questions; }, [questions]);
+
+  const validate = (qs: QuestionData[]): boolean => {
     if (!title.trim()) { toast.error('Bitte geben Sie einen Titel ein'); return false; }
-    if (questions.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
-    if (questions.filter((q) => q.is_category).length > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
-    for (const q of questions) {
+    if (qs.length === 0) { toast.error('Bitte fügen Sie mindestens eine Frage hinzu'); return false; }
+    if (qs.filter((q) => q.is_category).length > 1) { toast.error('Es kann nur eine Frage als Kategorie markiert werden'); return false; }
+    for (const q of qs) {
       if (!q.question_text.trim()) { toast.error('Alle Fragen müssen einen Text haben'); return false; }
       if (q.question_type === 'text') {
         const m = Number(q.text_max_answers);
@@ -405,29 +409,35 @@ const CreateSurvey = () => {
   };
 
   const handleSave = async () => {
-    if (!validate()) return;
+    const qs = questionsRef.current;
+    if (!validate(qs)) return;
     setSaving(true);
     try {
-      if (isEditMode && editId) await doUpdate(editId);
-      else await doCreate();
+      if (isEditMode && editId) {
+        await doUpdate(editId, false, qs);
+      } else {
+        await doCreate(qs);
+      }
       toast.success(isEditMode ? 'Umfrage aktualisiert' : 'Umfrage erstellt');
       navigate('/admin');
     } catch (err: any) {
-      const msg = err?.message || err?.error_description || JSON.stringify(err) || 'Unbekannter Fehler';
+      const msg = err?.message || err?.details || err?.hint || JSON.stringify(err) || 'Unbekannter Fehler';
+      console.error('[CreateSurvey] Save error:', JSON.stringify(err));
       if (msg !== 'VERSION_CONFLICT') toast.error(`Fehler: ${msg}`);
-      console.error('[CreateSurvey] Save error:', err);
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const doCreate = async () => {
+  const doCreate = async (qs: QuestionData[]) => {
     const { data: survey, error } = await supabase.from('surveys')
       .insert({ title, description, created_by: user?.id, status: 'draft', is_active: false, visibility, allow_copy: allowCopy, allow_edit: allowEdit, last_modified_by: user?.id })
       .select().single();
     if (error) throw error;
-    await saveQuestions(survey.id, questions);
+    await saveQuestions(survey.id, qs);
   };
 
-  const doUpdate = async (surveyId: string, force = false) => {
+  const doUpdate = async (surveyId: string, force: boolean, qs: QuestionData[]) => {
     const { data: cur, error: fetchErr } = await supabase.from('surveys').select('version, title, description').eq('id', surveyId).single();
     if (fetchErr) throw fetchErr;
     const dbVersion = cur.version ?? 1;
@@ -436,14 +446,15 @@ const CreateSurvey = () => {
       setShowConflictDialog(true);
       throw new Error('VERSION_CONFLICT');
     }
-    const { error } = await supabase.from('surveys')
+    const { error: updateErr } = await supabase.from('surveys')
       .update({ title, description, updated_at: new Date().toISOString(), visibility, allow_copy: allowCopy, allow_edit: allowEdit, version: dbVersion + 1, editing_by: null, editing_since: null, last_modified_by: user?.id })
       .eq('id', surveyId);
-    if (error) throw error;
-    setCurrentVersion(dbVersion + 1);
+    if (updateErr) throw updateErr;
     const { error: delErr } = await supabase.from('questions').delete().eq('survey_id', surveyId);
     if (delErr) throw delErr;
-    await saveQuestions(surveyId, questions);
+    await saveQuestions(surveyId, qs);
+    // Update version in state only after everything succeeded
+    setCurrentVersion(dbVersion + 1);
   };
 
   const saveQuestions = async (surveyId: string, qs: QuestionData[]) => {
@@ -455,8 +466,9 @@ const CreateSurvey = () => {
       order_index: i,
       max_text_answers: q.question_type === 'text' ? Number(q.text_max_answers) : null,
     }));
+    console.log('[CreateSurvey] Inserting questions:', JSON.stringify(qRows));
     const { data: inserted, error: qErr } = await supabase.from('questions').insert(qRows).select('id, order_index');
-    if (qErr) throw qErr;
+    if (qErr) { console.error('[CreateSurvey] Question insert error:', JSON.stringify(qErr)); throw qErr; }
     const sorted = [...(inserted || [])].sort((a, b) => a.order_index - b.order_index);
     const optRows: { question_id: string; option_text: string; order_index: number }[] = [];
     for (let i = 0; i < qs.length; i++) {
@@ -474,8 +486,9 @@ const CreateSurvey = () => {
       if (q.is_category && q.question_type === 'single') optRows.push({ question_id: qId, option_text: buildCategoryMetaOption(), order_index: 9997 });
     }
     if (optRows.length > 0) {
+      console.log('[CreateSurvey] Inserting options:', optRows.length);
       const { error: oErr } = await supabase.from('options').insert(optRows);
-      if (oErr) throw oErr;
+      if (oErr) { console.error('[CreateSurvey] Option insert error:', JSON.stringify(oErr)); throw oErr; }
     }
   };
 
@@ -631,7 +644,7 @@ const CreateSurvey = () => {
               setShowConflictDialog(false);
               if (!editId) return;
               setSaving(true);
-              try { await doUpdate(editId, true); toast.success('Umfrage aktualisiert'); navigate('/admin'); }
+              try { await doUpdate(editId, true, questionsRef.current); toast.success('Umfrage aktualisiert'); navigate('/admin'); }
               catch { toast.error('Fehler beim Speichern'); }
               finally { setSaving(false); }
             }} className="bg-amber-600 hover:bg-amber-700">Meine Version überschreiben</Button>
