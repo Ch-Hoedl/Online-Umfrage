@@ -531,8 +531,8 @@ const SurveyPage = () => {
                       </div>
                     )}
 
-                    {/* Comment field */}
-                    {hasCommentOption(qid) && (
+                    {/* Comment field – not shown for longtext */}
+                    {!longTextQuestion && hasCommentOption(qid) && (
                       <div className="mt-5 pt-4 border-t border-gray-100">
                         <Label htmlFor={`comment-${qid}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
                           <MessageSquare className="w-4 h-4 text-blue-400" />

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
@@ -93,10 +94,20 @@ const SurveyPreview = () => {
   const getTextMaxAnswers = (qid: string) => {
     const meta = (options[qid] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
     const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
-    return parsed && parsed >= 1 ? parsed : 1;
+    if (parsed && parsed >= 1) return parsed;
+    const q = questions.find((q) => q.id === qid);
+    return q?.max_text_answers ?? 1;
   };
   const hasCommentOption = (qid: string) => (options[qid] || []).some((o) => isCommentMetaOption(o.option_text));
-  const isTextQuestion = (qid: string) => (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
+  const isTextQuestion = (qid: string) => {
+    const q = questions.find((q) => q.id === qid);
+    if (q?.question_type === 'text') return true;
+    return (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
+  };
+  const isLongTextQuestion = (qid: string) => {
+    const q = questions.find((q) => q.id === qid);
+    return q?.question_type === 'longtext';
+  };
   const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
   // ── answer handlers ───────────────────────────────────────────────────────────
@@ -118,6 +129,9 @@ const SurveyPreview = () => {
       return { ...prev, [qid]: next };
     });
 
+  const handleLongTextChange = (qid: string, value: string) =>
+    setAnswers((prev) => ({ ...prev, [qid]: [value] }));
+
   const handleCommentChange = (qid: string, value: string) =>
     setComments((prev) => ({ ...prev, [qid]: value }));
 
@@ -134,6 +148,15 @@ const SurveyPreview = () => {
       if (isTextQuestion(question.id)) {
         const terms = (answers[question.id] || []).map(normalizeTextTerm).filter(Boolean);
         if (terms.length === 0) {
+          toast.error('Bitte beantworten Sie alle Fragen');
+          setCurrentIndex(questions.indexOf(question));
+          return;
+        }
+        continue;
+      }
+      if (isLongTextQuestion(question.id)) {
+        const text = (answers[question.id]?.[0] || '').trim();
+        if (text.length === 0) {
           toast.error('Bitte beantworten Sie alle Fragen');
           setCurrentIndex(questions.indexOf(question));
           return;
@@ -262,6 +285,7 @@ const SurveyPreview = () => {
                 const qid = currentQuestion.id;
                 const visibleOptions = getVisibleOptions(qid);
                 const textQuestion = isTextQuestion(qid);
+                const longTextQuestion = isLongTextQuestion(qid);
                 const textMax = textQuestion ? getTextMaxAnswers(qid) : 0;
 
                 return (
@@ -275,9 +299,10 @@ const SurveyPreview = () => {
                           <CardTitle className="text-xl leading-snug">{currentQuestion.question_text}</CardTitle>
                           <CardDescription className="mt-1">
                             {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
-                            {!textQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                            {!textQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                            {!textQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                            {longTextQuestion && 'Schreiben Sie Ihre Antwort (bis zu 2048 Zeichen)'}
+                            {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
+                            {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
+                            {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
                           </CardDescription>
                         </div>
                       </div>
@@ -285,7 +310,7 @@ const SurveyPreview = () => {
                     <CardContent className="pt-0">
 
                       {/* Single choice */}
-                      {!textQuestion && currentQuestion.question_type === 'single' && (
+                      {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && (
                         <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
                           <div className="space-y-2">
                             {visibleOptions.map((option) => (
@@ -307,7 +332,7 @@ const SurveyPreview = () => {
                       )}
 
                       {/* Multiple choice */}
-                      {!textQuestion && currentQuestion.question_type === 'multiple' && (
+                      {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && (
                         <div className="space-y-2">
                           {visibleOptions.map((option) => (
                             <label
@@ -331,7 +356,7 @@ const SurveyPreview = () => {
                       )}
 
                       {/* Rating */}
-                      {!textQuestion && currentQuestion.question_type === 'rating' && (
+                      {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && (
                         <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
                           <div className="flex gap-3 justify-center flex-wrap">
                             {visibleOptions.map((option) => (
@@ -369,8 +394,23 @@ const SurveyPreview = () => {
                         </div>
                       )}
 
+                      {/* Long text / free text */}
+                      {longTextQuestion && (
+                        <div className="space-y-2">
+                          <Textarea
+                            value={answers[qid]?.[0] || ''}
+                            onChange={(e) => handleLongTextChange(qid, e.target.value)}
+                            placeholder="Schreiben Sie hier Ihre ausführliche Antwort…"
+                            maxLength={2048}
+                            rows={8}
+                            className="resize-none"
+                          />
+                          <p className="text-xs text-gray-400 text-right">{(answers[qid]?.[0] || '').length}/2048 Zeichen</p>
+                        </div>
+                      )}
+
                       {/* Comment field */}
-                      {hasCommentOption(qid) && (
+                      {!longTextQuestion && hasCommentOption(qid) && (
                         <div className="mt-5 pt-4 border-t border-gray-100">
                           <Label htmlFor={`comment-${qid}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
                             <MessageSquare className="w-4 h-4 text-blue-400" />
@@ -410,6 +450,8 @@ const SurveyPreview = () => {
                   {questions.map((q, i) => {
                     const answered = isTextQuestion(q.id)
                       ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
+                      : isLongTextQuestion(q.id)
+                      ? (answers[q.id]?.[0] || '').trim().length > 0
                       : (answers[q.id] || []).length > 0;
                     return (
                       <button
