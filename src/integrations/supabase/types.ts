@@ -23,7 +23,7 @@ export interface Question {
   id: string;
   survey_id: string;
   question_text: string;
-  question_type: 'single' | 'multiple' | 'rating' | 'text' | 'longtext';
+  question_type: 'single' | 'multiple' | 'rating' | 'text' | 'longtext' | 'multirating';
   order_index: number;
   expected_responses?: number;
   max_text_answers?: number | null;

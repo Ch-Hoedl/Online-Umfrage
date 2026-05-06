@@ -108,6 +108,12 @@ const SurveyPreview = () => {
     const q = questions.find((q) => q.id === qid);
     return q?.question_type === 'longtext';
   };
+
+  const isMultiRatingQuestion = (qid: string) => {
+    const q = questions.find((q) => q.id === qid);
+    return q?.question_type === 'multirating';
+  };
+
   const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
   // ── answer handlers ───────────────────────────────────────────────────────────
@@ -120,6 +126,13 @@ const SurveyPreview = () => {
       const cur = prev[qid] || [];
       return { ...prev, [qid]: checked ? [...cur, optionId] : cur.filter((id) => id !== optionId) };
     });
+
+  const handleMultiRatingChange = (qid: string, optionId: string, rating: string) => {
+    setAnswers((prev) => {
+      const cur = (prev[qid] || []).filter((v) => !v.startsWith(`${optionId}:`));
+      return { ...prev, [qid]: [...cur, `${optionId}:${rating}`] };
+    });
+  };
 
   const handleTextChange = (qid: string, index: number, value: string) =>
     setAnswers((prev) => {
@@ -158,6 +171,16 @@ const SurveyPreview = () => {
         const text = (answers[question.id]?.[0] || '').trim();
         if (text.length === 0) {
           toast.error('Bitte beantworten Sie alle Fragen');
+          setCurrentIndex(questions.indexOf(question));
+          return;
+        }
+        continue;
+      }
+      if (isMultiRatingQuestion(question.id)) {
+        const visibleOpts = getVisibleOptions(question.id);
+        const ratedCount = (answers[question.id] || []).filter((v) => v.includes(':')).length;
+        if (ratedCount < visibleOpts.length) {
+          toast.error('Bitte bewerten Sie alle Eigenschaften');
           setCurrentIndex(questions.indexOf(question));
           return;
         }
@@ -303,6 +326,7 @@ const SurveyPreview = () => {
                             {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
                             {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
                             {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                            {currentQuestion.question_type === 'multirating' && 'Bewerten Sie jede Eigenschaft von 1 (stimme voll zu) bis 5 (stimme überhaupt nicht zu)'}
                           </CardDescription>
                         </div>
                       </div>
@@ -375,6 +399,53 @@ const SurveyPreview = () => {
                             ))}
                           </div>
                         </RadioGroup>
+                      )}
+
+                      {/* Multirating */}
+                      {currentQuestion.question_type === 'multirating' && (
+                        <div className="space-y-1">
+                          {/* Header row */}
+                          <div className="hidden sm:grid sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center px-3 pb-2 border-b border-gray-100">
+                            <span className="text-xs font-medium text-gray-500"></span>
+                            {[1, 2, 3, 4, 5].map((n) => (
+                              <span key={n} className="text-xs font-semibold text-gray-500 text-center">{n}</span>
+                            ))}
+                          </div>
+                          {visibleOptions.map((option) => {
+                            const currentRating = (answers[qid] || []).find((v) => v.startsWith(`${option.id}:`))?.split(':')[1] || '';
+                            return (
+                              <div
+                                key={option.id}
+                                className={`rounded-xl border-2 px-3 py-3 transition-all ${
+                                  currentRating ? 'border-blue-200 bg-blue-50/50' : 'border-gray-100 bg-white'
+                                }`}
+                              >
+                                <p className="text-sm font-medium text-gray-800 mb-2 sm:hidden">{option.option_text}</p>
+                                <div className="grid grid-cols-5 sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center">
+                                  <p className="hidden sm:block text-sm font-medium text-gray-800">{option.option_text}</p>
+                                  {[1, 2, 3, 4, 5].map((n) => (
+                                    <button
+                                      key={n}
+                                      type="button"
+                                      onClick={() => handleMultiRatingChange(qid, option.id, n.toString())}
+                                      className={`w-10 h-10 sm:w-9 sm:h-9 mx-auto rounded-lg border-2 font-bold text-sm transition-all cursor-pointer ${
+                                        currentRating === n.toString()
+                                          ? 'border-blue-500 bg-blue-600 text-white shadow-md'
+                                          : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:bg-blue-50'
+                                      }`}
+                                    >
+                                      {n}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          <div className="flex justify-between text-xs text-gray-400 pt-2 px-1">
+                            <span>1 = stimme voll zu</span>
+                            <span>5 = stimme überhaupt nicht zu</span>
+                          </div>
+                        </div>
                       )}
 
                       {/* Text / word cloud */}
@@ -452,6 +523,8 @@ const SurveyPreview = () => {
                       ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
                       : isLongTextQuestion(q.id)
                       ? (answers[q.id]?.[0] || '').trim().length > 0
+                      : isMultiRatingQuestion(q.id)
+                      ? (answers[q.id] || []).filter((v) => v.includes(':')).length === getVisibleOptions(q.id).length
                       : (answers[q.id] || []).length > 0;
                     return (
                       <button

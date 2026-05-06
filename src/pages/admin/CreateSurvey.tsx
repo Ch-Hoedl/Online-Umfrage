@@ -33,7 +33,7 @@ const isCategoryMetaOption = (t: string) => { try { return isMetaOption(t) && JS
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type QuestionType = 'single' | 'multiple' | 'rating' | 'text' | 'longtext';
+type QuestionType = 'single' | 'multiple' | 'rating' | 'text' | 'longtext' | 'multirating';
 
 interface OptionData { id: string; text: string; }
 interface QuestionData {
@@ -52,6 +52,7 @@ const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   rating: 'Bewertung (1–5)',
   text: 'Offene Frage (Begriffe)',
   longtext: 'Offene Frage (Freier Text)',
+  multirating: 'Mehrfachbewertung (1–5)',
 };
 
 // ── QuestionCard ──────────────────────────────────────────────────────────────
@@ -148,8 +149,37 @@ const QuestionCard = memo(({
           </p>
         )}
 
+        {/* Multirating: manage rating items */}
+        {question.question_type === 'multirating' && (
+          <div>
+            <p className="text-sm text-gray-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-3">
+              Definieren Sie Eigenschaften, die jeweils von 1 (stimme voll zu) bis 5 (stimme überhaupt nicht zu) bewertet werden.
+            </p>
+            <Label>Eigenschaften *</Label>
+            <div className="space-y-2 mt-2">
+              {question.options.map((option, oIndex) => (
+                <div key={option.id} className="flex gap-2">
+                  <Input
+                    value={option.text}
+                    onChange={(e) => onUpdateOption(question.id, option.id, e.target.value)}
+                    placeholder={`Eigenschaft ${oIndex + 1}`}
+                  />
+                  {question.options.length > 1 && (
+                    <Button onClick={() => onRemoveOption(question.id, option.id)} variant="outline" size="icon">
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <Button onClick={() => onAddOption(question.id)} variant="outline" size="sm" className="w-full">
+                <Plus className="w-4 h-4 mr-2" />Eigenschaft hinzufügen
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Options */}
-        {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && (
+        {question.question_type !== 'rating' && question.question_type !== 'text' && question.question_type !== 'longtext' && question.question_type !== 'multirating' && (
           <div>
             <Label>Antwortmöglichkeiten *</Label>
             <div className="space-y-2 mt-2">
@@ -346,7 +376,9 @@ const CreateSurvey = () => {
           text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : (q.max_text_answers ?? 3),
           allow_comment: qOpts.some((o: any) => isCommentMetaOption(o.option_text)),
           is_category: qOpts.some((o: any) => isCategoryMetaOption(o.option_text)),
-          options: qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text })),
+          options: qType === 'multirating'
+            ? qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text }))
+            : qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text })),
         };
       }));
     } catch (err) {
@@ -388,6 +420,9 @@ const CreateSurvey = () => {
       if (field === 'question_type') {
         if (value === 'text' && !next.text_max_answers) next.text_max_answers = 3;
         if (value !== 'single') next.is_category = false;
+        if (value === 'multirating' && next.options.length === 0) {
+          next.options = [{ id: crypto.randomUUID(), text: '' }];
+        }
       }
       return next;
     }));
@@ -426,7 +461,11 @@ const CreateSurvey = () => {
         const m = Number(q.text_max_answers);
         if (!Number.isFinite(m) || m < 1 || m > 10) { toast.error('Max. Antworten muss zwischen 1 und 10 liegen'); return false; }
       }
-      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext') {
+      if (q.question_type === 'multirating') {
+        if (q.options.length === 0) { toast.error('Mehrfachbewertung benötigt mindestens eine Eigenschaft'); return false; }
+        if (q.options.some((o) => !o.text.trim())) { toast.error('Alle Eigenschaften müssen ausgefüllt sein'); return false; }
+      }
+      if (q.question_type !== 'rating' && q.question_type !== 'text' && q.question_type !== 'longtext' && q.question_type !== 'multirating') {
         if (q.options.some((o) => !o.text.trim())) { toast.error('Alle Antwortoptionen müssen ausgefüllt sein'); return false; }
       }
     }
@@ -502,6 +541,8 @@ const CreateSurvey = () => {
       if (!qId) continue;
       if (q.question_type === 'rating') {
         for (let j = 1; j <= 5; j++) optRows.push({ question_id: qId, option_text: j.toString(), order_index: j - 1 });
+      } else if (q.question_type === 'multirating') {
+        q.options.forEach((o, j) => optRows.push({ question_id: qId, option_text: o.text, order_index: j }));
       } else if (q.question_type === 'text') {
         optRows.push({ question_id: qId, option_text: buildTextMetaOption(Number(q.text_max_answers)), order_index: 9999 });
       } else if (q.question_type !== 'longtext') {

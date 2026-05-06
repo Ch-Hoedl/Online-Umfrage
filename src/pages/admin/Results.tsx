@@ -134,6 +134,11 @@ const Results = () => {
     return q?.question_type === 'longtext';
   };
 
+  const isMultiRatingQuestion = (questionId: string) => {
+    const q = questions.find((q) => q.id === questionId);
+    return q?.question_type === 'multirating';
+  };
+
   const getLongTextResponses = (questionId: string): string[] =>
     filterResponses(responses.filter((r) => r.question_id === questionId && r.text_response && !r.option_id))
       .map((r) => r.text_response as string)
@@ -162,6 +167,28 @@ const Results = () => {
     return Array.from(counts.entries())
       .map(([text, count]) => ({ text, count }))
       .sort((a, b) => b.count - a.count);
+  };
+
+  /** Get multirating data: for each property, compute average rating and distribution */
+  const getMultiRatingData = (questionId: string) => {
+    const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
+    const questionResponses = filterResponses(
+      responses.filter((r) => r.question_id === questionId && r.option_id && r.text_response)
+    );
+
+    return questionOptions.map((option) => {
+      const optResponses = questionResponses.filter((r) => r.option_id === option.id);
+      const ratings = optResponses.map((r) => parseInt(r.text_response || '0', 10)).filter((n) => n >= 1 && n <= 5);
+      const avg = ratings.length > 0 ? ratings.reduce((s, v) => s + v, 0) / ratings.length : 0;
+      const distribution = [0, 0, 0, 0, 0];
+      ratings.forEach((r) => { distribution[r - 1]++; });
+      return {
+        name: option.option_text,
+        avg: Math.round(avg * 100) / 100,
+        count: ratings.length,
+        distribution,
+      };
+    });
   };
 
   // ── Export ────────────────────────────────────────────────────────────────
@@ -260,6 +287,24 @@ const Results = () => {
               yPosition += 3;
             });
           }
+        } else if (isMultiRatingQuestion(question.id)) {
+          const mrData = getMultiRatingData(question.id);
+          pdf.setFontSize(10);
+          pdf.setFont('helvetica', 'normal');
+
+          if (mrData.length === 0 || mrData.every((d) => d.count === 0)) {
+            pdf.text('Noch keine Bewertungen.', margin + 5, yPosition);
+            yPosition += 6;
+          } else {
+            mrData.forEach((item) => {
+              if (yPosition > pageHeight - 20) {
+                pdf.addPage();
+                yPosition = margin;
+              }
+              pdf.text(`• ${item.name}: ⌀ ${item.avg.toFixed(2)} (${item.count} Bewertungen) [${item.distribution.map((c, i) => `${i + 1}:${c}`).join(', ')}]`, margin + 5, yPosition);
+              yPosition += 5;
+            });
+          }
         } else {
           const chartData = getChartData(question.id);
           pdf.setFontSize(10);
@@ -311,6 +356,22 @@ const Results = () => {
             new Date(response.created_at).toLocaleString('de-DE'),
           ];
           csvRows.push(row.join(','));
+          return;
+        }
+
+        // Handle multirating responses
+        if (question && isMultiRatingQuestion(question.id) && response.option_id && response.text_response) {
+          const option = options[response.question_id]?.find((o) => o.id === response.option_id);
+          if (option && !isMetaOption(option.option_text)) {
+            const row = [
+              response.participant_id,
+              `"${question.question_text.replace(/"/g, '""')}"`,
+              'multirating',
+              `"${option.option_text.replace(/"/g, '""')}: ${response.text_response}"`,
+              new Date(response.created_at).toLocaleString('de-DE'),
+            ];
+            csvRows.push(row.join(','));
+          }
           return;
         }
 
@@ -665,6 +726,93 @@ const Results = () => {
                         </p>
                       </div>
                     )}
+                  </CardContent>
+                </Card>
+              );
+            }
+
+            if (isMultiRatingQuestion(question.id)) {
+              const mrData = getMultiRatingData(question.id);
+              return (
+                <Card key={question.id}>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      {question.question_text}
+                      <Badge className="bg-amber-100 text-amber-700 border-amber-300 text-xs">
+                        Mehrfachbewertung
+                      </Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {mrData.length === 0 || mrData.every((d) => d.count === 0) ? (
+                      <p className="text-sm text-gray-500">Noch keine Bewertungen.</p>
+                    ) : (
+                      <div className="space-y-4">
+                        {/* Rating bars */}
+                        <div className="space-y-3">
+                          {mrData.map((item) => (
+                            <div key={item.name} className="space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-bold text-blue-700">⌀ {item.avg.toFixed(2)}</span>
+                                  <span className="text-xs text-gray-400">({item.count} {item.count === 1 ? 'Bewertung' : 'Bewertungen'})</span>
+                                </div>
+                              </div>
+                              {/* Visual bar */}
+                              <div className="flex items-center gap-1.5">
+                                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all"
+                                    style={{
+                                      width: item.avg > 0 ? `${((5 - item.avg) / 4) * 100}%` : '0%',
+                                      backgroundColor: item.avg <= 2 ? '#22c55e' : item.avg <= 3 ? '#f59e0b' : '#ef4444',
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              {/* Distribution */}
+                              <div className="flex gap-1">
+                                {item.distribution.map((count, idx) => (
+                                  <div key={idx} className="flex-1 text-center">
+                                    <div
+                                      className="mx-auto rounded-md transition-all"
+                                      style={{
+                                        height: `${Math.max(4, (count / Math.max(1, ...item.distribution)) * 32)}px`,
+                                        backgroundColor: COLORS[idx % COLORS.length],
+                                        opacity: count > 0 ? 1 : 0.15,
+                                      }}
+                                    />
+                                    <span className="text-[10px] text-gray-500 mt-0.5 block">{idx + 1}</span>
+                                    {count > 0 && <span className="text-[10px] text-gray-400 block">{count}×</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Summary bar chart */}
+                        <div className="pt-4 border-t border-gray-100">
+                          <p className="text-xs font-semibold text-gray-500 mb-3">Durchschnittswerte im Vergleich</p>
+                          <ResponsiveContainer width="100%" height={Math.max(200, mrData.length * 40)}>
+                            <BarChart data={mrData} layout="vertical" margin={{ left: 10, right: 30 }}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis type="number" domain={[0, 5]} ticks={[1, 2, 3, 4, 5]} />
+                              <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 12 }} />
+                              <Tooltip formatter={(value: number) => [`⌀ ${value.toFixed(2)}`, 'Durchschnitt']} />
+                              <Bar dataKey="avg" fill={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Durchschnitt" radius={[0, 6, 6, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        <div className="flex justify-between text-xs text-gray-400 px-1">
+                          <span>1 = stimme voll zu</span>
+                          <span>5 = stimme überhaupt nicht zu</span>
+                        </div>
+                      </div>
+                    )}
+                    <CommentsSection questionId={question.id} />
                   </CardContent>
                 </Card>
               );

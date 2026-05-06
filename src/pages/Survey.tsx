@@ -165,6 +165,11 @@ const SurveyPage = () => {
     return q?.question_type === 'longtext';
   };
 
+  const isMultiRatingQuestion = (qid: string) => {
+    const q = questions.find((q) => q.id === qid);
+    return q?.question_type === 'multirating';
+  };
+
   const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
   // ── answer handlers ───────────────────────────────────────────────────────────
@@ -199,6 +204,15 @@ const SurveyPage = () => {
     setComments((prev) => ({ ...prev, [qid]: value }));
   };
 
+  const handleMultiRatingChange = (qid: string, optionId: string, rating: string) => {
+    if (!canVote) return;
+    setAnswers((prev) => {
+      // Store as "optionId:rating" pairs
+      const cur = (prev[qid] || []).filter((v) => !v.startsWith(`${optionId}:`));
+      return { ...prev, [qid]: [...cur, `${optionId}:${rating}`] };
+    });
+  };
+
   // ── navigation ────────────────────────────────────────────────────────────────
 
   const isCurrentAnswered = () => {
@@ -211,6 +225,11 @@ const SurveyPage = () => {
     if (isLongTextQuestion(q.id)) {
       const text = (answers[q.id]?.[0] || '').trim();
       return text.length > 0;
+    }
+    if (isMultiRatingQuestion(q.id)) {
+      const visibleOpts = getVisibleOptions(q.id);
+      const ratedCount = (answers[q.id] || []).filter((v) => v.includes(':')).length;
+      return ratedCount === visibleOpts.length;
     }
     return (answers[q.id] || []).length > 0;
   };
@@ -254,6 +273,12 @@ const SurveyPage = () => {
         if (text.length === 0) { toast.error('Bitte beantworten Sie alle Fragen'); setCurrentIndex(questions.indexOf(question)); return; }
         continue;
       }
+      if (isMultiRatingQuestion(question.id)) {
+        const visibleOpts = getVisibleOptions(question.id);
+        const ratedCount = (answers[question.id] || []).filter((v) => v.includes(':')).length;
+        if (ratedCount < visibleOpts.length) { toast.error('Bitte bewerten Sie alle Eigenschaften'); setCurrentIndex(questions.indexOf(question)); return; }
+        continue;
+      }
       if (!answers[question.id] || answers[question.id].length === 0) {
         toast.error('Bitte beantworten Sie alle Fragen');
         setCurrentIndex(questions.indexOf(question));
@@ -287,6 +312,13 @@ const SurveyPage = () => {
           const text = (answers[question.id]?.[0] || '').trim().slice(0, 2048);
           if (text) {
             const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: text });
+            if (error) throw error;
+          }
+        } else if (isMultiRatingQuestion(question.id)) {
+          const pairs = (answers[question.id] || []).filter((v) => v.includes(':'));
+          for (const pair of pairs) {
+            const [optionId, rating] = pair.split(':');
+            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId, text_response: rating });
             if (error) throw error;
           }
         } else {
@@ -422,6 +454,7 @@ const SurveyPage = () => {
                           {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
                           {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
                           {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
+                          {currentQuestion.question_type === 'multirating' && 'Bewerten Sie jede Eigenschaft von 1 (stimme voll zu) bis 5 (stimme überhaupt nicht zu)'}
                         </CardDescription>
                       </div>
                     </div>
@@ -495,6 +528,54 @@ const SurveyPage = () => {
                           ))}
                         </div>
                       </RadioGroup>
+                    )}
+
+                    {/* Multirating */}
+                    {currentQuestion.question_type === 'multirating' && (
+                      <div className="space-y-1">
+                        {/* Header row */}
+                        <div className="hidden sm:grid sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center px-3 pb-2 border-b border-gray-100">
+                          <span className="text-xs font-medium text-gray-500"></span>
+                          {[1, 2, 3, 4, 5].map((n) => (
+                            <span key={n} className="text-xs font-semibold text-gray-500 text-center">{n}</span>
+                          ))}
+                        </div>
+                        {visibleOptions.map((option) => {
+                          const currentRating = (answers[qid] || []).find((v) => v.startsWith(`${option.id}:`))?.split(':')[1] || '';
+                          return (
+                            <div
+                              key={option.id}
+                              className={`rounded-xl border-2 px-3 py-3 transition-all ${
+                                currentRating ? 'border-blue-200 bg-blue-50/50' : 'border-gray-100 bg-white'
+                              }`}
+                            >
+                              <p className="text-sm font-medium text-gray-800 mb-2 sm:hidden">{option.option_text}</p>
+                              <div className="grid grid-cols-5 sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center">
+                                <p className="hidden sm:block text-sm font-medium text-gray-800">{option.option_text}</p>
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    disabled={!canVote}
+                                    onClick={() => handleMultiRatingChange(qid, option.id, n.toString())}
+                                    className={`w-10 h-10 sm:w-9 sm:h-9 mx-auto rounded-lg border-2 font-bold text-sm transition-all ${
+                                      currentRating === n.toString()
+                                        ? 'border-blue-500 bg-blue-600 text-white shadow-md'
+                                        : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:bg-blue-50'
+                                    } ${!canVote ? 'cursor-default' : 'cursor-pointer'}`}
+                                  >
+                                    {n}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div className="flex justify-between text-xs text-gray-400 pt-2 px-1">
+                          <span>1 = stimme voll zu</span>
+                          <span>5 = stimme überhaupt nicht zu</span>
+                        </div>
+                      </div>
                     )}
 
                     {/* Text / word cloud */}
@@ -575,6 +656,8 @@ const SurveyPage = () => {
                     ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
                     : isLongTextQuestion(q.id)
                     ? (answers[q.id]?.[0] || '').trim().length > 0
+                    : isMultiRatingQuestion(q.id)
+                    ? (answers[q.id] || []).filter((v) => v.includes(':')).length === getVisibleOptions(q.id).length
                     : (answers[q.id] || []).length > 0;
                   return (
                     <button
