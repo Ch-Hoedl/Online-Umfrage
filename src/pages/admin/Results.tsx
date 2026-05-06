@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option, Response } from '@/integrations/supabase/types';
@@ -15,7 +15,6 @@ import {
 } from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-// jsPDF imported dynamically to avoid build issues if not installed
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
 
@@ -30,6 +29,28 @@ function isCommentMetaOption(t: string) { return parseMeta(t)?.kind === 'comment
 function isTextMetaOption(t: string) { return parseMeta(t)?.kind === 'text'; }
 function isCategoryMetaOption(t: string) { return parseMeta(t)?.kind === 'category'; }
 
+// ── SVG → PNG helper ────────────────────────────────────────────────────────
+
+/**
+ * Capture a DOM element as a PNG data-URL via html2canvas.
+ * Returns null if the element doesn't exist or capture fails.
+ */
+async function captureElementAsImage(el: HTMLElement): Promise<string | null> {
+  try {
+    const html2canvas = (await import('html2canvas')).default;
+    const canvas = await html2canvas(el, {
+      backgroundColor: '#ffffff',
+      scale: 2,
+      logging: false,
+      useCORS: true,
+    });
+    return canvas.toDataURL('image/png');
+  } catch (err) {
+    console.error('[Results] captureElementAsImage failed:', err);
+    return null;
+  }
+}
+
 const Results = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -42,6 +63,9 @@ const Results = () => {
 
   // Category filter state
   const [selectedCategory, setSelectedCategory] = useState<string>('__all__');
+
+  // Refs for chart containers (keyed by question id)
+  const chartRefs = useRef<{ [qid: string]: HTMLDivElement | null }>({});
 
   const surveyUrl = `${window.location.origin}/survey/${id}`;
 
@@ -82,20 +106,14 @@ const Results = () => {
 
   // ── Category logic ────────────────────────────────────────────────────────
 
-  /** The question marked as category (if any) */
   const categoryQuestion = questions.find((q) =>
     (options[q.id] || []).some((o) => isCategoryMetaOption(o.option_text))
   ) ?? null;
 
-  /** Visible options of the category question */
   const categoryOptions = categoryQuestion
     ? (options[categoryQuestion.id] || []).filter((o) => !isMetaOption(o.option_text))
     : [];
 
-  /**
-   * Set of participant_ids that match the selected category.
-   * If no category question or "all" selected → null (= no filter).
-   */
   const filteredParticipants: Set<string> | null = (() => {
     if (!categoryQuestion || selectedCategory === '__all__') return null;
     const catResponses = responses.filter(
@@ -104,7 +122,6 @@ const Results = () => {
     return new Set(catResponses.map((r) => r.participant_id));
   })();
 
-  /** Filter responses by participant if a category is active */
   const filterResponses = (rs: Response[]) => {
     if (!filteredParticipants) return rs;
     return rs.filter((r) => filteredParticipants.has(r.participant_id));
@@ -169,7 +186,6 @@ const Results = () => {
       .sort((a, b) => b.count - a.count);
   };
 
-  /** Get multirating data: for each property, compute average rating and distribution */
   const getMultiRatingData = (questionId: string) => {
     const questionOptions = (options[questionId] || []).filter((o) => !isMetaOption(o.option_text));
     const questionResponses = filterResponses(
@@ -197,7 +213,7 @@ const Results = () => {
     if (!survey) return;
 
     setExporting(true);
-    toast.info('PDF wird erstellt...');
+    toast.info('PDF wird erstellt – Diagramme werden erfasst…');
 
     try {
       const { jsPDF } = await import('jspdf');
@@ -205,8 +221,17 @@ const Results = () => {
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const margin = 15;
+      const contentWidth = pageWidth - 2 * margin;
       let yPosition = margin;
 
+      const ensureSpace = (needed: number) => {
+        if (yPosition + needed > pageHeight - margin) {
+          pdf.addPage();
+          yPosition = margin;
+        }
+      };
+
+      // ── Title ──
       pdf.setFontSize(18);
       pdf.setFont('helvetica', 'bold');
       pdf.text(survey.title, margin, yPosition);
@@ -215,7 +240,7 @@ const Results = () => {
       if (survey.description) {
         pdf.setFontSize(11);
         pdf.setFont('helvetica', 'normal');
-        const descLines = pdf.splitTextToSize(survey.description, pageWidth - 2 * margin);
+        const descLines = pdf.splitTextToSize(survey.description, contentWidth);
         pdf.text(descLines, margin, yPosition);
         yPosition += descLines.length * 5 + 5;
       }
@@ -225,35 +250,31 @@ const Results = () => {
       pdf.text(`Teilnehmer: ${totalResponses}`, margin, yPosition);
       yPosition += 10;
 
+      // ── Questions ──
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
 
-        if (yPosition > pageHeight - 40) {
-          pdf.addPage();
-          yPosition = margin;
-        }
+        ensureSpace(40);
 
+        // Question title
         pdf.setFontSize(12);
         pdf.setFont('helvetica', 'bold');
-        const questionLines = pdf.splitTextToSize(`${i + 1}. ${question.question_text}`, pageWidth - 2 * margin);
+        const questionLines = pdf.splitTextToSize(`${i + 1}. ${question.question_text}`, contentWidth);
         pdf.text(questionLines, margin, yPosition);
         yPosition += questionLines.length * 6 + 3;
 
+        // ── Text data (always printed) ──
         if (isTextOnlyQuestion(question.id)) {
           const cloud = getWordCloud(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
-
           if (cloud.length === 0) {
             pdf.text('Noch keine Antworten.', margin + 5, yPosition);
             yPosition += 6;
           } else {
             cloud.slice(0, 15).forEach((item) => {
-              if (yPosition > pageHeight - 20) {
-                pdf.addPage();
-                yPosition = margin;
-              }
-              pdf.text(`• ${item.text} (${item.count}×)`, margin + 5, yPosition);
+              ensureSpace(8);
+              pdf.text(`\u2022 ${item.text} (${item.count}\u00d7)`, margin + 5, yPosition);
               yPosition += 5;
             });
           }
@@ -261,26 +282,19 @@ const Results = () => {
           const longTextResponses = getLongTextResponses(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
-
           if (longTextResponses.length === 0) {
             pdf.text('Noch keine Antworten.', margin + 5, yPosition);
             yPosition += 6;
           } else {
             longTextResponses.forEach((text, idx) => {
-              if (yPosition > pageHeight - 30) {
-                pdf.addPage();
-                yPosition = margin;
-              }
+              ensureSpace(20);
               pdf.setFont('helvetica', 'bold');
               pdf.text(`Antwort ${idx + 1}:`, margin + 5, yPosition);
               yPosition += 5;
               pdf.setFont('helvetica', 'normal');
-              const lines = pdf.splitTextToSize(text, pageWidth - 2 * margin - 10);
+              const lines = pdf.splitTextToSize(text, contentWidth - 10);
               lines.forEach((line: string) => {
-                if (yPosition > pageHeight - 20) {
-                  pdf.addPage();
-                  yPosition = margin;
-                }
+                ensureSpace(6);
                 pdf.text(line, margin + 5, yPosition);
                 yPosition += 4;
               });
@@ -291,33 +305,78 @@ const Results = () => {
           const mrData = getMultiRatingData(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
-
           if (mrData.length === 0 || mrData.every((d) => d.count === 0)) {
             pdf.text('Noch keine Bewertungen.', margin + 5, yPosition);
             yPosition += 6;
           } else {
+            // Print text summary
             mrData.forEach((item) => {
-              if (yPosition > pageHeight - 20) {
-                pdf.addPage();
-                yPosition = margin;
-              }
-              pdf.text(`• ${item.name}: ⌀ ${item.avg.toFixed(2)} (${item.count} Bewertungen) [${item.distribution.map((c, i) => `${i + 1}:${c}`).join(', ')}]`, margin + 5, yPosition);
+              ensureSpace(8);
+              pdf.text(`\u2022 ${item.name}: \u2300 ${item.avg.toFixed(2)} (${item.count} Bew.) [${item.distribution.map((c, di) => `${di + 1}:${c}`).join(', ')}]`, margin + 5, yPosition);
               yPosition += 5;
             });
+            yPosition += 3;
+          }
+
+          // Capture chart image
+          const chartEl = chartRefs.current[question.id];
+          if (chartEl) {
+            const imgData = await captureElementAsImage(chartEl);
+            if (imgData) {
+              const chartImgHeight = 60;
+              ensureSpace(chartImgHeight + 5);
+              pdf.addImage(imgData, 'PNG', margin, yPosition, contentWidth, chartImgHeight);
+              yPosition += chartImgHeight + 5;
+            }
           }
         } else {
+          // Standard chart questions (single, multiple, rating)
           const chartData = getChartData(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
 
+          // Print text summary
           chartData.forEach((item) => {
-            if (yPosition > pageHeight - 20) {
-              pdf.addPage();
-              yPosition = margin;
-            }
-            pdf.text(`• ${item.name}: ${item.value}`, margin + 5, yPosition);
+            ensureSpace(8);
+            pdf.text(`\u2022 ${item.name}: ${item.value}`, margin + 5, yPosition);
             yPosition += 5;
           });
+          yPosition += 3;
+
+          // Capture chart image
+          const chartEl = chartRefs.current[question.id];
+          if (chartEl) {
+            const imgData = await captureElementAsImage(chartEl);
+            if (imgData) {
+              const chartImgHeight = 70;
+              ensureSpace(chartImgHeight + 5);
+              pdf.addImage(imgData, 'PNG', margin, yPosition, contentWidth, chartImgHeight);
+              yPosition += chartImgHeight + 5;
+            }
+          }
+        }
+
+        // Comments
+        if (hasComments(question.id)) {
+          const commentList = getComments(question.id);
+          if (commentList.length > 0) {
+            ensureSpace(15);
+            pdf.setFontSize(9);
+            pdf.setFont('helvetica', 'bold');
+            pdf.text(`Kommentare (${commentList.length}):`, margin + 5, yPosition);
+            yPosition += 4;
+            pdf.setFont('helvetica', 'normal');
+            commentList.forEach((c) => {
+              ensureSpace(8);
+              const cLines = pdf.splitTextToSize(`\u2013 ${c}`, contentWidth - 10);
+              cLines.forEach((line: string) => {
+                ensureSpace(5);
+                pdf.text(line, margin + 8, yPosition);
+                yPosition += 4;
+              });
+              yPosition += 1;
+            });
+          }
         }
 
         yPosition += 5;
@@ -338,15 +397,11 @@ const Results = () => {
 
     try {
       const csvRows: string[] = [];
-
-      // Header
       csvRows.push('Teilnehmer-ID,Frage,Fragetyp,Antwort,Zeitstempel');
 
-      // Daten
       responses.forEach((response) => {
         const question = questions.find((q) => q.id === response.question_id);
-        
-        // Handle longtext responses
+
         if (question && response.text_response && !response.option_id && isLongTextQuestion(question.id)) {
           const row = [
             response.participant_id,
@@ -359,7 +414,6 @@ const Results = () => {
           return;
         }
 
-        // Handle multirating responses
         if (question && isMultiRatingQuestion(question.id) && response.option_id && response.text_response) {
           const option = options[response.question_id]?.find((o) => o.id === response.option_id);
           if (option && !isMetaOption(option.option_text)) {
@@ -455,7 +509,6 @@ const Results = () => {
   const filteredCount = filteredParticipants ? filteredParticipants.size : totalResponses;
   const isPublished = survey.status === 'published';
 
-  // Sub-component: comments section
   const CommentsSection = ({ questionId }: { questionId: string }) => {
     const commentList = getComments(questionId);
     if (!hasComments(questionId)) return null;
@@ -479,7 +532,6 @@ const Results = () => {
     );
   };
 
-  // Non-category questions to display
   const displayQuestions = questions.filter((q) =>
     !(options[q.id] || []).some((o) => isCategoryMetaOption(o.option_text))
   );
@@ -510,7 +562,7 @@ const Results = () => {
           <div className="flex gap-2 flex-wrap">
             <Button onClick={exportToPDF} disabled={exporting} variant="outline">
               <Download className="w-5 h-5 mr-2" />
-              {exporting ? 'Erstelle PDF...' : 'PDF exportieren'}
+              {exporting ? 'Erstelle PDF…' : 'PDF exportieren'}
             </Button>
             <Button onClick={exportToCSV} variant="outline">
               <Download className="w-5 h-5 mr-2" />
@@ -599,7 +651,7 @@ const Results = () => {
               </div>
               {selectedCategory !== '__all__' && (
                 <div className="mt-2 text-xs text-purple-700 bg-purple-100 rounded-lg px-3 py-1.5">
-                  Zeige Ergebnisse für: <strong>{categoryOptions.find((o) => o.id === selectedCategory)?.option_text}</strong> – {filteredCount} {filteredCount === 1 ? 'Teilnehmer' : 'Teilnehmer'}
+                  Zeige Ergebnisse für: <strong>{categoryOptions.find((o) => o.id === selectedCategory)?.option_text}</strong> – {filteredCount} Teilnehmer
                 </div>
               )}
             </CardContent>
@@ -614,7 +666,7 @@ const Results = () => {
           </Card>
         )}
 
-        {/* Charts – category question shown separately at top */}
+        {/* Category question chart */}
         {categoryQuestion && (
           <Card className="mb-6 border-purple-200">
             <CardHeader>
@@ -759,7 +811,6 @@ const Results = () => {
                                   <span className="text-xs text-gray-400">({item.count} {item.count === 1 ? 'Bewertung' : 'Bewertungen'})</span>
                                 </div>
                               </div>
-                              {/* Visual bar */}
                               <div className="flex items-center gap-1.5">
                                 <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
                                   <div
@@ -771,7 +822,6 @@ const Results = () => {
                                   />
                                 </div>
                               </div>
-                              {/* Distribution */}
                               <div className="flex gap-1">
                                 {item.distribution.map((count, idx) => (
                                   <div key={idx} className="flex-1 text-center">
@@ -792,8 +842,11 @@ const Results = () => {
                           ))}
                         </div>
 
-                        {/* Summary bar chart */}
-                        <div className="pt-4 border-t border-gray-100">
+                        {/* Summary bar chart – wrapped in ref for PDF capture */}
+                        <div
+                          ref={(el) => { chartRefs.current[question.id] = el; }}
+                          className="pt-4 border-t border-gray-100 bg-white"
+                        >
                           <p className="text-xs font-semibold text-gray-500 mb-3">Durchschnittswerte im Vergleich</p>
                           <ResponsiveContainer width="100%" height={Math.max(200, mrData.length * 40)}>
                             <BarChart data={mrData} layout="vertical" margin={{ left: 10, right: 30 }}>
@@ -818,57 +871,61 @@ const Results = () => {
               );
             }
 
+            // Standard chart questions (single, multiple, rating)
             const chartData = getChartData(question.id);
             return (
               <Card key={question.id}>
                 <CardHeader><CardTitle>{question.question_text}</CardTitle></CardHeader>
                 <CardContent>
-                  <Tabs defaultValue="bar" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3">
-                      <TabsTrigger value="bar">Balkendiagramm</TabsTrigger>
-                      <TabsTrigger value="line">Liniendiagramm</TabsTrigger>
-                      <TabsTrigger value="pie">Kreisdiagramm</TabsTrigger>
-                    </TabsList>
+                  {/* Chart container wrapped in ref for PDF capture */}
+                  <div ref={(el) => { chartRefs.current[question.id] = el; }}>
+                    <Tabs defaultValue="bar" className="w-full">
+                      <TabsList className="grid w-full grid-cols-3">
+                        <TabsTrigger value="bar">Balkendiagramm</TabsTrigger>
+                        <TabsTrigger value="line">Liniendiagramm</TabsTrigger>
+                        <TabsTrigger value="pie">Kreisdiagramm</TabsTrigger>
+                      </TabsList>
 
-                    <TabsContent value="bar" className="mt-6">
-                      <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="name" />
-                          <YAxis allowDecimals={false} />
-                          <Tooltip /><Legend />
-                          <Bar dataKey="value" fill={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Antworten" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </TabsContent>
+                      <TabsContent value="bar" className="mt-6">
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="name" />
+                            <YAxis allowDecimals={false} />
+                            <Tooltip /><Legend />
+                            <Bar dataKey="value" fill={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Antworten" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </TabsContent>
 
-                    <TabsContent value="line" className="mt-6">
-                      <ResponsiveContainer width="100%" height={300}>
-                        <LineChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="name" />
-                          <YAxis allowDecimals={false} />
-                          <Tooltip /><Legend />
-                          <Line type="monotone" dataKey="value" stroke={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Antworten" strokeWidth={2} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </TabsContent>
+                      <TabsContent value="line" className="mt-6">
+                        <ResponsiveContainer width="100%" height={300}>
+                          <LineChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="name" />
+                            <YAxis allowDecimals={false} />
+                            <Tooltip /><Legend />
+                            <Line type="monotone" dataKey="value" stroke={filteredParticipants ? '#8b5cf6' : '#3b82f6'} name="Antworten" strokeWidth={2} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </TabsContent>
 
-                    <TabsContent value="pie" className="mt-6">
-                      <ResponsiveContainer width="100%" height={300}>
-                        <PieChart>
-                          <Pie data={chartData} cx="50%" cy="50%" labelLine={false}
-                            label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                            outerRadius={100} dataKey="value">
-                            {chartData.map((_, index) => (
-                              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </TabsContent>
-                  </Tabs>
+                      <TabsContent value="pie" className="mt-6">
+                        <ResponsiveContainer width="100%" height={300}>
+                          <PieChart>
+                            <Pie data={chartData} cx="50%" cy="50%" labelLine={false}
+                              label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                              outerRadius={100} dataKey="value">
+                              {chartData.map((_, index) => (
+                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </TabsContent>
+                    </Tabs>
+                  </div>
                   <CommentsSection questionId={question.id} />
                 </CardContent>
               </Card>
