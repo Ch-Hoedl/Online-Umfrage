@@ -3,79 +3,35 @@ import { useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
+import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { CheckCircle2, BarChart3, MessageSquare, ChevronLeft, ChevronRight, Send } from 'lucide-react';
-
-// ── constants & helpers ───────────────────────────────────────────────────────
-
-const DEVICE_ID_STORAGE_KEY = 'survey_device_id_v1';
-const VOTED_SURVEY_PREFIX = 'survey_voted_v1:';
-const META_PREFIX = '__dyad_meta__:';
-const SURVEY_META_PREFIXES = ['__dyad_meta__:', '__dyad_survey_meta__:'];
-
-function stripMetaFromDescription(desc: string | null | undefined): string {
-  if (!desc) return '';
-  // Remove any line that starts with a known meta prefix
-  return desc
-    .split('\n')
-    .filter((line) => !SURVEY_META_PREFIXES.some((p) => line.trim().startsWith(p)))
-    .join('\n')
-    .trim();
-}
-
-function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
-
-function parseTextMaxAnswers(t: string): number | null {
-  if (!isMetaOption(t)) return null;
-  try {
-    const p = JSON.parse(t.slice(META_PREFIX.length));
-    if (p?.kind === 'text' && typeof p?.maxAnswers === 'number') return p.maxAnswers;
-  } catch { /* ignore */ }
-  return null;
-}
-
-function isCommentMetaOption(t: string): boolean {
-  if (!isMetaOption(t)) return false;
-  try { return JSON.parse(t.slice(META_PREFIX.length))?.kind === 'comment'; }
-  catch { return false; }
-}
-
-function getDeviceId() {
-  const e = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
-  if (e) return e;
-  const id = crypto.randomUUID();
-  localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
-  return id;
-}
-function hasVotedLocally(sid: string) { return localStorage.getItem(`${VOTED_SURVEY_PREFIX}${sid}`) === '1'; }
-function markVotedLocally(sid: string) { localStorage.setItem(`${VOTED_SURVEY_PREFIX}${sid}`, '1'); }
-function normalizeTextTerm(v: string) { return v.trim().replace(/\s+/g, ' '); }
-
-// ── component ─────────────────────────────────────────────────────────────────
+import { CheckCircle2, BarChart3, ChevronLeft, ChevronRight, Send } from 'lucide-react';
+import QuestionRenderer from '@/components/QuestionRenderer';
+import {
+  stripMetaFromDescription,
+  normalizeTextTerm,
+  getDeviceId,
+  hasVotedLocally,
+  markVotedLocally,
+  isTextQuestion as isTextQ,
+  isLongTextQuestion as isLongTextQ,
+  isMultiRatingQuestion as isMultiRatingQ,
+  getTextMaxAnswers as getTextMax,
+  getVisibleOptions as getVisOpts,
+  hasCommentOption as hasComment,
+  isQuestionAnswered,
+} from '@/lib/surveyHelpers';
 
 const SurveyPage = () => {
   const { id } = useParams();
 
-  // data
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [options, setOptions] = useState<{ [qid: string]: Option[] }>({});
-
-  // answers (stored locally until submit)
   const [answers, setAnswers] = useState<{ [qid: string]: string[] }>({});
   const [comments, setComments] = useState<{ [qid: string]: string }>({});
-
-  // navigation
   const [currentIndex, setCurrentIndex] = useState(0);
-
-  // status
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -90,8 +46,6 @@ const SurveyPage = () => {
   );
 
   useEffect(() => { loadSurvey(); }, [id]);
-
-  // ── data loading ─────────────────────────────────────────────────────────────
 
   const loadSurvey = async () => {
     setLoading(true);
@@ -138,40 +92,6 @@ const SurveyPage = () => {
     finally { setLoading(false); }
   };
 
-  // ── question helpers ──────────────────────────────────────────────────────────
-
-  const getTextMaxAnswers = (qid: string): number => {
-    // First try meta-option approach (legacy)
-    const metaOpt = (options[qid] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
-    if (metaOpt) {
-      const parsed = parseTextMaxAnswers(metaOpt.option_text);
-      if (parsed && parsed >= 1) return parsed;
-    }
-    // Fall back to question's max_text_answers column
-    const q = questions.find((q) => q.id === qid);
-    return q?.max_text_answers ?? 1;
-  };
-
-  const hasCommentOption = (qid: string) => (options[qid] || []).some((o) => isCommentMetaOption(o.option_text));
-
-  const isTextQuestion = (qid: string) => {
-    const q = questions.find((q) => q.id === qid);
-    if (q?.question_type === 'text') return true;
-    return (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
-  };
-
-  const isLongTextQuestion = (qid: string) => {
-    const q = questions.find((q) => q.id === qid);
-    return q?.question_type === 'longtext';
-  };
-
-  const isMultiRatingQuestion = (qid: string) => {
-    const q = questions.find((q) => q.id === qid);
-    return q?.question_type === 'multirating';
-  };
-
-  const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
-
   // ── answer handlers ───────────────────────────────────────────────────────────
 
   const handleSingleChoice = (qid: string, optionId: string) => {
@@ -194,7 +114,6 @@ const SurveyPage = () => {
       return { ...prev, [qid]: next };
     });
   };
-
   const handleLongTextChange = (qid: string, value: string) => {
     if (!canVote) return;
     setAnswers((prev) => ({ ...prev, [qid]: [value] }));
@@ -203,11 +122,9 @@ const SurveyPage = () => {
     if (!canVote) return;
     setComments((prev) => ({ ...prev, [qid]: value }));
   };
-
   const handleMultiRatingChange = (qid: string, optionId: string, rating: string) => {
     if (!canVote) return;
     setAnswers((prev) => {
-      // Store as "optionId:rating" pairs
       const cur = (prev[qid] || []).filter((v) => !v.startsWith(`${optionId}:`));
       return { ...prev, [qid]: [...cur, `${optionId}:${rating}`] };
     });
@@ -215,38 +132,15 @@ const SurveyPage = () => {
 
   // ── navigation ────────────────────────────────────────────────────────────────
 
-  const isCurrentAnswered = () => {
-    if (!questions[currentIndex]) return false;
-    const q = questions[currentIndex];
-    if (isTextQuestion(q.id)) {
-      const terms = (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean);
-      return terms.length > 0;
-    }
-    if (isLongTextQuestion(q.id)) {
-      const text = (answers[q.id]?.[0] || '').trim();
-      return text.length > 0;
-    }
-    if (isMultiRatingQuestion(q.id)) {
-      const visibleOpts = getVisibleOptions(q.id);
-      const ratedCount = (answers[q.id] || []).filter((v) => v.includes(':')).length;
-      return ratedCount === visibleOpts.length;
-    }
-    return (answers[q.id] || []).length > 0;
-  };
-
-  const goNext = () => {
-    if (currentIndex < questions.length - 1) setCurrentIndex((i) => i + 1);
-  };
-  const goPrev = () => {
-    if (currentIndex > 0) setCurrentIndex((i) => i - 1);
-  };
+  const goNext = () => { if (currentIndex < questions.length - 1) setCurrentIndex((i) => i + 1); };
+  const goPrev = () => { if (currentIndex > 0) setCurrentIndex((i) => i - 1); };
 
   // ── submit ────────────────────────────────────────────────────────────────────
 
   const getOrCreateTextOptionId = async (qid: string, term: string) => {
     const normalized = normalizeTextTerm(term);
     if (!normalized) throw new Error('empty term');
-    const existingInState = getVisibleOptions(qid).find((o) => o.option_text.toLowerCase() === normalized.toLowerCase());
+    const existingInState = getVisOpts(qid, options).find((o) => o.option_text.toLowerCase() === normalized.toLowerCase());
     if (existingInState) return existingInState.id;
     const { data: existing } = await supabase.from('options').select('*').eq('question_id', qid).ilike('option_text', normalized).maybeSingle();
     if (existing) return (existing as Option).id;
@@ -261,26 +155,12 @@ const SurveyPage = () => {
     if (limitReached) { toast.error('Das Stimmen-Limit wurde erreicht'); return; }
     if (alreadyVoted || hasVotedLocally(survey.id)) { toast.error('Sie haben bereits teilgenommen'); return; }
 
-    // Validate all questions
     for (const question of questions) {
-      if (isTextQuestion(question.id)) {
-        const terms = (answers[question.id] || []).map(normalizeTextTerm).filter(Boolean);
-        if (terms.length === 0) { toast.error('Bitte beantworten Sie alle Fragen'); setCurrentIndex(questions.indexOf(question)); return; }
-        continue;
-      }
-      if (isLongTextQuestion(question.id)) {
-        const text = (answers[question.id]?.[0] || '').trim();
-        if (text.length === 0) { toast.error('Bitte beantworten Sie alle Fragen'); setCurrentIndex(questions.indexOf(question)); return; }
-        continue;
-      }
-      if (isMultiRatingQuestion(question.id)) {
-        const visibleOpts = getVisibleOptions(question.id);
-        const ratedCount = (answers[question.id] || []).filter((v) => v.includes(':')).length;
-        if (ratedCount < visibleOpts.length) { toast.error('Bitte bewerten Sie alle Eigenschaften'); setCurrentIndex(questions.indexOf(question)); return; }
-        continue;
-      }
-      if (!answers[question.id] || answers[question.id].length === 0) {
-        toast.error('Bitte beantworten Sie alle Fragen');
+      if (!isQuestionAnswered(question.id, answers, options, questions)) {
+        const msg = isMultiRatingQ(question.id, questions)
+          ? 'Bitte bewerten Sie alle Eigenschaften'
+          : 'Bitte beantworten Sie alle Fragen';
+        toast.error(msg);
         setCurrentIndex(questions.indexOf(question));
         return;
       }
@@ -291,7 +171,6 @@ const SurveyPage = () => {
       const participantId = getDeviceId();
       const questionIds = questions.map((q) => q.id);
 
-      // Re-check before insert
       if (questionIds.length > 0) {
         const { data: respData } = await supabase.from('responses').select('participant_id').in('question_id', questionIds);
         const participants = new Set((respData || []).map((r) => r.participant_id));
@@ -300,21 +179,21 @@ const SurveyPage = () => {
       }
 
       for (const question of questions) {
-        if (isTextQuestion(question.id)) {
-          const max = getTextMaxAnswers(question.id);
+        if (isTextQ(question.id, options, questions)) {
+          const max = getTextMax(question.id, options, questions);
           const terms = (answers[question.id] || []).slice(0, max).map(normalizeTextTerm).filter(Boolean);
           for (const term of terms) {
             const optionId = await getOrCreateTextOptionId(question.id, term);
             const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId });
             if (error) throw error;
           }
-        } else if (isLongTextQuestion(question.id)) {
+        } else if (isLongTextQ(question.id, questions)) {
           const text = (answers[question.id]?.[0] || '').trim().slice(0, 2048);
           if (text) {
             const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: text });
             if (error) throw error;
           }
-        } else if (isMultiRatingQuestion(question.id)) {
+        } else if (isMultiRatingQ(question.id, questions)) {
           const pairs = (answers[question.id] || []).filter((v) => v.includes(':'));
           for (const pair of pairs) {
             const [optionId, rating] = pair.split(':');
@@ -328,9 +207,8 @@ const SurveyPage = () => {
           }
         }
 
-        // Save comment if present
         const comment = comments[question.id]?.trim();
-        if (comment && hasCommentOption(question.id)) {
+        if (comment && hasComment(question.id, options)) {
           const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: comment.slice(0, 1024) });
           if (error) throw error;
         }
@@ -346,7 +224,7 @@ const SurveyPage = () => {
     }
   };
 
-  // ── render states ─────────────────────────────────────────────────────────────
+  // ── render ────────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -369,7 +247,6 @@ const SurveyPage = () => {
     );
   }
 
-  // Thank-you screen
   if (submitted) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
@@ -398,7 +275,6 @@ const SurveyPage = () => {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 py-8">
       <div className="container mx-auto px-4 max-w-2xl">
 
-        {/* Survey header */}
         <div className="mb-8 text-center">
           <div className="inline-flex items-center justify-center w-14 h-14 bg-blue-600 rounded-2xl mb-4 shadow-md">
             <BarChart3 className="w-7 h-7 text-white" />
@@ -407,7 +283,6 @@ const SurveyPage = () => {
           {survey.description && <p className="text-gray-600">{survey.description}</p>}
         </div>
 
-        {/* Closed banner */}
         {showClosedBanner && (
           <Card className="mb-6 border-amber-200 bg-amber-50">
             <CardContent className="pt-4 pb-4">
@@ -420,7 +295,6 @@ const SurveyPage = () => {
 
         {totalQuestions > 0 && (
           <>
-            {/* Progress bar */}
             <div className="mb-6">
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm font-medium text-gray-600">
@@ -431,279 +305,64 @@ const SurveyPage = () => {
               <Progress value={progressPercent} className="h-2.5 rounded-full" />
             </div>
 
-            {/* Question card */}
-            {currentQuestion && (() => {
-              const qid = currentQuestion.id;
-              const visibleOptions = getVisibleOptions(qid);
-              const textQuestion = isTextQuestion(qid);
-              const longTextQuestion = isLongTextQuestion(qid);
-              const textMax = textQuestion ? getTextMaxAnswers(qid) : 0;
+            {currentQuestion && (
+              <QuestionRenderer
+                question={currentQuestion}
+                questionIndex={currentIndex}
+                answers={answers}
+                comments={comments}
+                options={options}
+                questions={questions}
+                disabled={!canVote}
+                onSingleChoice={handleSingleChoice}
+                onMultipleChoice={handleMultipleChoice}
+                onMultiRatingChange={handleMultiRatingChange}
+                onTextChange={handleTextChange}
+                onLongTextChange={handleLongTextChange}
+                onCommentChange={handleCommentChange}
+              />
+            )}
 
-              return (
-                <Card className={`shadow-md transition-all ${!canVote ? 'opacity-75' : ''}`}>
-                  <CardHeader className="pb-4">
-                    <div className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-bold flex items-center justify-center mt-0.5">
-                        {currentIndex + 1}
-                      </span>
-                      <div>
-                        <CardTitle className="text-xl leading-snug">{currentQuestion.question_text}</CardTitle>
-                        <CardDescription className="mt-1">
-                          {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
-                          {longTextQuestion && 'Schreiben Sie Ihre Antwort (bis zu 2048 Zeichen)'}
-                          {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                          {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                          {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
-                          {currentQuestion.question_type === 'multirating' && 'Bewerten Sie jede Eigenschaft von 1 (stimme voll zu) bis 5 (stimme überhaupt nicht zu)'}
-                        </CardDescription>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-
-                    {/* Single choice */}
-                    {!textQuestion && currentQuestion.question_type === 'single' && (
-                      <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
-                        <div className="space-y-2">
-                          {visibleOptions.map((option) => (
-                            <label
-                              key={option.id}
-                              htmlFor={option.id}
-                              className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-all ${
-                                answers[qid]?.[0] === option.id
-                                  ? 'border-blue-500 bg-blue-50'
-                                  : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
-                              } ${!canVote ? 'cursor-default' : ''}`}
-                            >
-                              <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} />
-                              <span className="flex-1 text-gray-800">{option.option_text}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </RadioGroup>
-                    )}
-
-                    {/* Multiple choice */}
-                    {!textQuestion && currentQuestion.question_type === 'multiple' && (
-                      <div className="space-y-2">
-                        {visibleOptions.map((option) => (
-                          <label
-                            key={option.id}
-                            htmlFor={option.id}
-                            className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-all ${
-                              answers[qid]?.includes(option.id)
-                                ? 'border-blue-500 bg-blue-50'
-                                : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
-                            } ${!canVote ? 'cursor-default' : ''}`}
-                          >
-                            <Checkbox
-                              id={option.id}
-                              disabled={!canVote}
-                              checked={answers[qid]?.includes(option.id) || false}
-                              onCheckedChange={(checked) => handleMultipleChoice(qid, option.id, checked as boolean)}
-                            />
-                            <span className="flex-1 text-gray-800">{option.option_text}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Rating */}
-                    {!textQuestion && currentQuestion.question_type === 'rating' && (
-                      <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
-                        <div className="flex gap-3 justify-center flex-wrap">
-                          {visibleOptions.map((option) => (
-                            <label
-                              key={option.id}
-                              htmlFor={option.id}
-                              className={`flex flex-col items-center justify-center w-14 h-14 rounded-xl border-2 cursor-pointer transition-all font-bold text-lg ${
-                                answers[qid]?.[0] === option.id
-                                  ? 'border-blue-500 bg-blue-600 text-white shadow-md'
-                                  : 'border-gray-200 text-gray-700 hover:border-blue-300 hover:bg-blue-50'
-                              } ${!canVote ? 'cursor-default' : ''}`}
-                            >
-                              <RadioGroupItem value={option.id} id={option.id} disabled={!canVote} className="sr-only" />
-                              {option.option_text}
-                            </label>
-                          ))}
-                        </div>
-                      </RadioGroup>
-                    )}
-
-                    {/* Multirating */}
-                    {currentQuestion.question_type === 'multirating' && (
-                      <div className="space-y-1">
-                        {/* Header row */}
-                        <div className="hidden sm:grid sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center px-3 pb-2 border-b border-gray-100">
-                          <span className="text-xs font-medium text-gray-500"></span>
-                          {[1, 2, 3, 4, 5].map((n) => (
-                            <span key={n} className="text-xs font-semibold text-gray-500 text-center">{n}</span>
-                          ))}
-                        </div>
-                        {visibleOptions.map((option) => {
-                          const currentRating = (answers[qid] || []).find((v) => v.startsWith(`${option.id}:`))?.split(':')[1] || '';
-                          return (
-                            <div
-                              key={option.id}
-                              className={`rounded-xl border-2 px-3 py-3 transition-all ${
-                                currentRating ? 'border-blue-200 bg-blue-50/50' : 'border-gray-100 bg-white'
-                              }`}
-                            >
-                              <p className="text-sm font-medium text-gray-800 mb-2 sm:hidden">{option.option_text}</p>
-                              <div className="grid grid-cols-5 sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center">
-                                <p className="hidden sm:block text-sm font-medium text-gray-800">{option.option_text}</p>
-                                {[1, 2, 3, 4, 5].map((n) => (
-                                  <button
-                                    key={n}
-                                    type="button"
-                                    disabled={!canVote}
-                                    onClick={() => handleMultiRatingChange(qid, option.id, n.toString())}
-                                    className={`w-10 h-10 sm:w-9 sm:h-9 mx-auto rounded-lg border-2 font-bold text-sm transition-all ${
-                                      currentRating === n.toString()
-                                        ? 'border-blue-500 bg-blue-600 text-white shadow-md'
-                                        : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:bg-blue-50'
-                                    } ${!canVote ? 'cursor-default' : 'cursor-pointer'}`}
-                                  >
-                                    {n}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                        <div className="flex justify-between text-xs text-gray-400 pt-2 px-1">
-                          <span>1 = stimme voll zu</span>
-                          <span>5 = stimme überhaupt nicht zu</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Text / word cloud */}
-                    {textQuestion && (
-                      <div className="space-y-3">
-                        {Array.from({ length: textMax }).map((_, idx) => (
-                          <div key={idx} className="space-y-1">
-                            {textMax > 1 && <Label>Antwort {idx + 1}</Label>}
-                            <Input
-                              value={answers[qid]?.[idx] || ''}
-                              onChange={(e) => handleTextChange(qid, idx, e.target.value)}
-                              placeholder="Ihre Antwort…"
-                              disabled={!canVote}
-                            />
-                          </div>
-                        ))}
-                        <p className="text-xs text-gray-500">Tipp: Kurze Begriffe funktionieren am besten für die Begriffswolke.</p>
-                      </div>
-                    )}
-
-                    {/* Long text / free text */}
-                    {longTextQuestion && (
-                      <div className="space-y-2">
-                        <Textarea
-                          value={answers[qid]?.[0] || ''}
-                          onChange={(e) => handleLongTextChange(qid, e.target.value)}
-                          placeholder="Schreiben Sie hier Ihre ausführliche Antwort…"
-                          disabled={!canVote}
-                          maxLength={2048}
-                          rows={8}
-                          className="resize-none"
-                        />
-                        <p className="text-xs text-gray-400 text-right">{(answers[qid]?.[0] || '').length}/2048 Zeichen</p>
-                      </div>
-                    )}
-
-                    {/* Comment field – not shown for longtext */}
-                    {!longTextQuestion && hasCommentOption(qid) && (
-                      <div className="mt-5 pt-4 border-t border-gray-100">
-                        <Label htmlFor={`comment-${qid}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
-                          <MessageSquare className="w-4 h-4 text-blue-400" />
-                          Persönlicher Kommentar <span className="text-gray-400">(optional)</span>
-                        </Label>
-                        <textarea
-                          id={`comment-${qid}`}
-                          value={comments[qid] || ''}
-                          onChange={(e) => handleCommentChange(qid, e.target.value)}
-                          disabled={!canVote}
-                          maxLength={1024}
-                          rows={3}
-                          placeholder="Ihr persönlicher Kommentar zu dieser Frage…"
-                          className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-none disabled:opacity-50"
-                        />
-                        <p className="text-xs text-gray-400 text-right mt-1">{(comments[qid] || '').length}/1024</p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })()}
-
-            {/* Navigation */}
             <div className="mt-6 flex items-center gap-3">
-              <Button
-                variant="outline"
-                onClick={goPrev}
-                disabled={currentIndex === 0}
-                className="flex items-center gap-2 px-5"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                Zurück
+              <Button variant="outline" onClick={goPrev} disabled={currentIndex === 0} className="flex items-center gap-2 px-5">
+                <ChevronLeft className="w-4 h-4" /> Zurück
               </Button>
 
-              {/* Dot indicators */}
               <div className="flex-1 flex justify-center gap-1.5 flex-wrap">
-                {questions.map((q, i) => {
-                  const answered = isTextQuestion(q.id)
-                    ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
-                    : isLongTextQuestion(q.id)
-                    ? (answers[q.id]?.[0] || '').trim().length > 0
-                    : isMultiRatingQuestion(q.id)
-                    ? (answers[q.id] || []).filter((v) => v.includes(':')).length === getVisibleOptions(q.id).length
-                    : (answers[q.id] || []).length > 0;
-                  return (
-                    <button
-                      key={q.id}
-                      onClick={() => setCurrentIndex(i)}
-                      title={`Frage ${i + 1}`}
-                      className={`w-2.5 h-2.5 rounded-full transition-all ${
-                        i === currentIndex
-                          ? 'bg-blue-600 scale-125'
-                          : answered
-                          ? 'bg-blue-300'
-                          : 'bg-gray-300 hover:bg-gray-400'
-                      }`}
-                    />
-                  );
-                })}
+                {questions.map((q, i) => (
+                  <button
+                    key={q.id}
+                    onClick={() => setCurrentIndex(i)}
+                    title={`Frage ${i + 1}`}
+                    className={`w-2.5 h-2.5 rounded-full transition-all ${
+                      i === currentIndex
+                        ? 'bg-blue-600 scale-125'
+                        : isQuestionAnswered(q.id, answers, options, questions)
+                        ? 'bg-blue-300'
+                        : 'bg-gray-300 hover:bg-gray-400'
+                    }`}
+                  />
+                ))}
               </div>
 
               {isLastQuestion ? (
-                <Button
-                  onClick={handleSubmit}
-                  disabled={!canVote || submitting}
-                  className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold"
-                >
+                <Button onClick={handleSubmit} disabled={!canVote || submitting} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold">
                   <Send className="w-4 h-4" />
                   {submitting ? 'Wird gesendet…' : 'Absenden'}
                 </Button>
               ) : (
-                <Button
-                  onClick={goNext}
-                  className="flex items-center gap-2 px-5 bg-blue-600 hover:bg-blue-700"
-                >
-                  Weiter
-                  <ChevronRight className="w-4 h-4" />
+                <Button onClick={goNext} className="flex items-center gap-2 px-5 bg-blue-600 hover:bg-blue-700">
+                  Weiter <ChevronRight className="w-4 h-4" />
                 </Button>
               )}
             </div>
 
-            {/* Submit hint on last question */}
             {isLastQuestion && canVote && (
               <p className="text-center text-sm text-gray-500 mt-4">
                 Alle Antworten werden erst beim Klick auf <strong>„Absenden"</strong> gespeichert.
               </p>
             )}
 
-            {/* Participant count */}
             {typeof survey.max_votes === 'number' && (
               <p className="text-center text-xs text-gray-400 mt-3">
                 Teilnehmer: {participantCount}/{survey.max_votes}

@@ -11,25 +11,15 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AlertTriangle, Plus, Trash2, ArrowLeft, Save, ChevronUp, ChevronDown, MessageSquare, Tag, Users, Lock, Copy, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
-
-// ── Meta-option helpers ───────────────────────────────────────────────────────
-
-const META_PREFIX = '__dyad_meta__:';
-const buildTextMetaOption = (maxAnswers: number) => `${META_PREFIX}${JSON.stringify({ kind: 'text', maxAnswers })}`;
-const buildCommentMetaOption = () => `${META_PREFIX}${JSON.stringify({ kind: 'comment' })}`;
-const buildCategoryMetaOption = () => `${META_PREFIX}${JSON.stringify({ kind: 'category' })}`;
-const isMetaOption = (text: string) => text.startsWith(META_PREFIX);
-
-function parseTextMaxAnswers(optionText: string): number | null {
-  if (!isMetaOption(optionText)) return null;
-  try {
-    const parsed = JSON.parse(optionText.slice(META_PREFIX.length));
-    if (parsed?.kind === 'text' && typeof parsed?.maxAnswers === 'number') return parsed.maxAnswers;
-  } catch { /* ignore */ }
-  return null;
-}
-const isCommentMetaOption = (t: string) => { try { return isMetaOption(t) && JSON.parse(t.slice(META_PREFIX.length))?.kind === 'comment'; } catch { return false; } };
-const isCategoryMetaOption = (t: string) => { try { return isMetaOption(t) && JSON.parse(t.slice(META_PREFIX.length))?.kind === 'category'; } catch { return false; } };
+import {
+  buildTextMetaOption,
+  buildCommentMetaOption,
+  buildCategoryMetaOption,
+  isMetaOption,
+  parseTextMaxAnswers,
+  isCommentMetaOption,
+  isCategoryMetaOption,
+} from '@/lib/surveyHelpers';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -376,9 +366,7 @@ const CreateSurvey = () => {
           text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : (q.max_text_answers ?? 3),
           allow_comment: qOpts.some((o: any) => isCommentMetaOption(o.option_text)),
           is_category: qOpts.some((o: any) => isCategoryMetaOption(o.option_text)),
-          options: qType === 'multirating'
-            ? qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text }))
-            : qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text })),
+          options: qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text })),
         };
       }));
     } catch (err) {

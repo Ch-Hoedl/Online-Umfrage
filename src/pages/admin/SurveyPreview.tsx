@@ -3,39 +3,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
+import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
+import { BarChart3, ChevronLeft, ChevronRight, Send, Eye, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import QuestionRenderer from '@/components/QuestionRenderer';
 import {
-  BarChart3, MessageSquare, ChevronLeft, ChevronRight,
-  Send, Eye, ArrowLeft, CheckCircle2,
-} from 'lucide-react';
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-const META_PREFIX = '__dyad_meta__:';
-function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
-function parseTextMaxAnswers(t: string): number | null {
-  if (!isMetaOption(t)) return null;
-  try {
-    const p = JSON.parse(t.slice(META_PREFIX.length));
-    if (p?.kind === 'text' && typeof p?.maxAnswers === 'number') return p.maxAnswers;
-  } catch { /* ignore */ }
-  return null;
-}
-function isCommentMetaOption(t: string): boolean {
-  if (!isMetaOption(t)) return false;
-  try { return JSON.parse(t.slice(META_PREFIX.length))?.kind === 'comment'; }
-  catch { return false; }
-}
-function normalizeTextTerm(v: string) { return v.trim().replace(/\s+/g, ' '); }
-
-// ── component ─────────────────────────────────────────────────────────────────
+  isQuestionAnswered,
+  isMultiRatingQuestion as isMultiRatingQ,
+} from '@/lib/surveyHelpers';
 
 const SurveyPreview = () => {
   const { id } = useParams();
@@ -55,7 +31,6 @@ const SurveyPreview = () => {
   const loadSurvey = async () => {
     setLoading(true);
     try {
-      // Load without is_active filter so admins can preview draft copies too
       const { data: surveyData, error } = await supabase
         .from('surveys').select('*').eq('id', id).single();
       if (error) throw error;
@@ -88,33 +63,6 @@ const SurveyPreview = () => {
     } catch { toast.error('Umfrage konnte nicht geladen werden'); }
     finally { setLoading(false); }
   };
-
-  // ── question helpers ──────────────────────────────────────────────────────────
-
-  const getTextMaxAnswers = (qid: string) => {
-    const meta = (options[qid] || []).find((o) => parseTextMaxAnswers(o.option_text) !== null);
-    const parsed = meta ? parseTextMaxAnswers(meta.option_text) : null;
-    if (parsed && parsed >= 1) return parsed;
-    const q = questions.find((q) => q.id === qid);
-    return q?.max_text_answers ?? 1;
-  };
-  const hasCommentOption = (qid: string) => (options[qid] || []).some((o) => isCommentMetaOption(o.option_text));
-  const isTextQuestion = (qid: string) => {
-    const q = questions.find((q) => q.id === qid);
-    if (q?.question_type === 'text') return true;
-    return (options[qid] || []).some((o) => parseTextMaxAnswers(o.option_text) !== null);
-  };
-  const isLongTextQuestion = (qid: string) => {
-    const q = questions.find((q) => q.id === qid);
-    return q?.question_type === 'longtext';
-  };
-
-  const isMultiRatingQuestion = (qid: string) => {
-    const q = questions.find((q) => q.id === qid);
-    return q?.question_type === 'multirating';
-  };
-
-  const getVisibleOptions = (qid: string) => (options[qid] || []).filter((o) => !isMetaOption(o.option_text));
 
   // ── answer handlers ───────────────────────────────────────────────────────────
 
@@ -153,46 +101,17 @@ const SurveyPreview = () => {
   const goNext = () => { if (currentIndex < questions.length - 1) setCurrentIndex((i) => i + 1); };
   const goPrev = () => { if (currentIndex > 0) setCurrentIndex((i) => i - 1); };
 
-  // ── "submit" in preview mode ──────────────────────────────────────────────────
-
   const handlePreviewSubmit = () => {
-    // Validate all questions (same as real survey)
     for (const question of questions) {
-      if (isTextQuestion(question.id)) {
-        const terms = (answers[question.id] || []).map(normalizeTextTerm).filter(Boolean);
-        if (terms.length === 0) {
-          toast.error('Bitte beantworten Sie alle Fragen');
-          setCurrentIndex(questions.indexOf(question));
-          return;
-        }
-        continue;
-      }
-      if (isLongTextQuestion(question.id)) {
-        const text = (answers[question.id]?.[0] || '').trim();
-        if (text.length === 0) {
-          toast.error('Bitte beantworten Sie alle Fragen');
-          setCurrentIndex(questions.indexOf(question));
-          return;
-        }
-        continue;
-      }
-      if (isMultiRatingQuestion(question.id)) {
-        const visibleOpts = getVisibleOptions(question.id);
-        const ratedCount = (answers[question.id] || []).filter((v) => v.includes(':')).length;
-        if (ratedCount < visibleOpts.length) {
-          toast.error('Bitte bewerten Sie alle Eigenschaften');
-          setCurrentIndex(questions.indexOf(question));
-          return;
-        }
-        continue;
-      }
-      if (!answers[question.id] || answers[question.id].length === 0) {
-        toast.error('Bitte beantworten Sie alle Fragen');
+      if (!isQuestionAnswered(question.id, answers, options, questions)) {
+        const msg = isMultiRatingQ(question.id, questions)
+          ? 'Bitte bewerten Sie alle Eigenschaften'
+          : 'Bitte beantworten Sie alle Fragen';
+        toast.error(msg);
         setCurrentIndex(questions.indexOf(question));
         return;
       }
     }
-    // No DB write – just show the thank-you screen
     setPreviewSubmitted(true);
   };
 
@@ -219,11 +138,9 @@ const SurveyPreview = () => {
     );
   }
 
-  // Preview thank-you screen
   if (previewSubmitted) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
-        {/* Preview banner */}
         <div className="bg-amber-400 text-amber-900 text-sm font-semibold text-center py-2 px-4 flex items-center justify-center gap-2">
           <Eye className="w-4 h-4" />
           VORSCHAU-MODUS – Keine Daten werden gespeichert
@@ -266,7 +183,6 @@ const SurveyPreview = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
 
-      {/* Preview banner */}
       <div className="bg-amber-400 text-amber-900 text-sm font-semibold text-center py-2 px-4 flex items-center justify-center gap-2 sticky top-0 z-10">
         <Eye className="w-4 h-4 flex-shrink-0" />
         VORSCHAU-MODUS – Keine Daten werden gespeichert
@@ -281,7 +197,6 @@ const SurveyPreview = () => {
       <div className="py-8">
         <div className="container mx-auto px-4 max-w-2xl">
 
-          {/* Survey header */}
           <div className="mb-8 text-center">
             <div className="inline-flex items-center justify-center w-14 h-14 bg-blue-600 rounded-2xl mb-4 shadow-md">
               <BarChart3 className="w-7 h-7 text-white" />
@@ -292,7 +207,6 @@ const SurveyPreview = () => {
 
           {totalQuestions > 0 && (
             <>
-              {/* Progress bar */}
               <div className="mb-6">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-sm font-medium text-gray-600">
@@ -303,258 +217,53 @@ const SurveyPreview = () => {
                 <Progress value={progressPercent} className="h-2.5 rounded-full" />
               </div>
 
-              {/* Question card */}
-              {currentQuestion && (() => {
-                const qid = currentQuestion.id;
-                const visibleOptions = getVisibleOptions(qid);
-                const textQuestion = isTextQuestion(qid);
-                const longTextQuestion = isLongTextQuestion(qid);
-                const textMax = textQuestion ? getTextMaxAnswers(qid) : 0;
+              {currentQuestion && (
+                <QuestionRenderer
+                  question={currentQuestion}
+                  questionIndex={currentIndex}
+                  answers={answers}
+                  comments={comments}
+                  options={options}
+                  questions={questions}
+                  idPrefix="prev-"
+                  onSingleChoice={handleSingleChoice}
+                  onMultipleChoice={handleMultipleChoice}
+                  onMultiRatingChange={handleMultiRatingChange}
+                  onTextChange={handleTextChange}
+                  onLongTextChange={handleLongTextChange}
+                  onCommentChange={handleCommentChange}
+                />
+              )}
 
-                return (
-                  <Card className="shadow-md">
-                    <CardHeader className="pb-4">
-                      <div className="flex items-start gap-3">
-                        <span className="flex-shrink-0 w-8 h-8 rounded-full bg-blue-600 text-white text-sm font-bold flex items-center justify-center mt-0.5">
-                          {currentIndex + 1}
-                        </span>
-                        <div>
-                          <CardTitle className="text-xl leading-snug">{currentQuestion.question_text}</CardTitle>
-                          <CardDescription className="mt-1">
-                            {textQuestion && `Geben Sie bis zu ${textMax} Begriff(e) ein`}
-                            {longTextQuestion && 'Schreiben Sie Ihre Antwort (bis zu 2048 Zeichen)'}
-                            {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && 'Wählen Sie eine Antwort'}
-                            {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && 'Wählen Sie eine oder mehrere Antworten'}
-                            {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && 'Bewerten Sie von 1 bis 5'}
-                            {currentQuestion.question_type === 'multirating' && 'Bewerten Sie jede Eigenschaft von 1 (stimme voll zu) bis 5 (stimme überhaupt nicht zu)'}
-                          </CardDescription>
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="pt-0">
-
-                      {/* Single choice */}
-                      {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'single' && (
-                        <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
-                          <div className="space-y-2">
-                            {visibleOptions.map((option) => (
-                              <label
-                                key={option.id}
-                                htmlFor={`prev-${option.id}`}
-                                className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-all ${
-                                  answers[qid]?.[0] === option.id
-                                    ? 'border-blue-500 bg-blue-50'
-                                    : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
-                                }`}
-                              >
-                                <RadioGroupItem value={option.id} id={`prev-${option.id}`} />
-                                <span className="flex-1 text-gray-800">{option.option_text}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </RadioGroup>
-                      )}
-
-                      {/* Multiple choice */}
-                      {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'multiple' && (
-                        <div className="space-y-2">
-                          {visibleOptions.map((option) => (
-                            <label
-                              key={option.id}
-                              htmlFor={`prev-${option.id}`}
-                              className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-all ${
-                                answers[qid]?.includes(option.id)
-                                  ? 'border-blue-500 bg-blue-50'
-                                  : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
-                              }`}
-                            >
-                              <Checkbox
-                                id={`prev-${option.id}`}
-                                checked={answers[qid]?.includes(option.id) || false}
-                                onCheckedChange={(checked) => handleMultipleChoice(qid, option.id, checked as boolean)}
-                              />
-                              <span className="flex-1 text-gray-800">{option.option_text}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Rating */}
-                      {!textQuestion && !longTextQuestion && currentQuestion.question_type === 'rating' && (
-                        <RadioGroup value={answers[qid]?.[0] || ''} onValueChange={(v) => handleSingleChoice(qid, v)}>
-                          <div className="flex gap-3 justify-center flex-wrap">
-                            {visibleOptions.map((option) => (
-                              <label
-                                key={option.id}
-                                htmlFor={`prev-${option.id}`}
-                                className={`flex flex-col items-center justify-center w-14 h-14 rounded-xl border-2 cursor-pointer transition-all font-bold text-lg ${
-                                  answers[qid]?.[0] === option.id
-                                    ? 'border-blue-500 bg-blue-600 text-white shadow-md'
-                                    : 'border-gray-200 text-gray-700 hover:border-blue-300 hover:bg-blue-50'
-                                }`}
-                              >
-                                <RadioGroupItem value={option.id} id={`prev-${option.id}`} className="sr-only" />
-                                {option.option_text}
-                              </label>
-                            ))}
-                          </div>
-                        </RadioGroup>
-                      )}
-
-                      {/* Multirating */}
-                      {currentQuestion.question_type === 'multirating' && (
-                        <div className="space-y-1">
-                          {/* Header row */}
-                          <div className="hidden sm:grid sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center px-3 pb-2 border-b border-gray-100">
-                            <span className="text-xs font-medium text-gray-500"></span>
-                            {[1, 2, 3, 4, 5].map((n) => (
-                              <span key={n} className="text-xs font-semibold text-gray-500 text-center">{n}</span>
-                            ))}
-                          </div>
-                          {visibleOptions.map((option) => {
-                            const currentRating = (answers[qid] || []).find((v) => v.startsWith(`${option.id}:`))?.split(':')[1] || '';
-                            return (
-                              <div
-                                key={option.id}
-                                className={`rounded-xl border-2 px-3 py-3 transition-all ${
-                                  currentRating ? 'border-blue-200 bg-blue-50/50' : 'border-gray-100 bg-white'
-                                }`}
-                              >
-                                <p className="text-sm font-medium text-gray-800 mb-2 sm:hidden">{option.option_text}</p>
-                                <div className="grid grid-cols-5 sm:grid-cols-[1fr_repeat(5,2.5rem)] gap-2 items-center">
-                                  <p className="hidden sm:block text-sm font-medium text-gray-800">{option.option_text}</p>
-                                  {[1, 2, 3, 4, 5].map((n) => (
-                                    <button
-                                      key={n}
-                                      type="button"
-                                      onClick={() => handleMultiRatingChange(qid, option.id, n.toString())}
-                                      className={`w-10 h-10 sm:w-9 sm:h-9 mx-auto rounded-lg border-2 font-bold text-sm transition-all cursor-pointer ${
-                                        currentRating === n.toString()
-                                          ? 'border-blue-500 bg-blue-600 text-white shadow-md'
-                                          : 'border-gray-200 text-gray-600 hover:border-blue-300 hover:bg-blue-50'
-                                      }`}
-                                    >
-                                      {n}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                          <div className="flex justify-between text-xs text-gray-400 pt-2 px-1">
-                            <span>1 = stimme voll zu</span>
-                            <span>5 = stimme überhaupt nicht zu</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Text / word cloud */}
-                      {textQuestion && (
-                        <div className="space-y-3">
-                          {Array.from({ length: textMax }).map((_, idx) => (
-                            <div key={idx} className="space-y-1">
-                              {textMax > 1 && <Label>Antwort {idx + 1}</Label>}
-                              <Input
-                                value={answers[qid]?.[idx] || ''}
-                                onChange={(e) => handleTextChange(qid, idx, e.target.value)}
-                                placeholder="Ihre Antwort…"
-                              />
-                            </div>
-                          ))}
-                          <p className="text-xs text-gray-500">Tipp: Kurze Begriffe funktionieren am besten für die Begriffswolke.</p>
-                        </div>
-                      )}
-
-                      {/* Long text / free text */}
-                      {longTextQuestion && (
-                        <div className="space-y-2">
-                          <Textarea
-                            value={answers[qid]?.[0] || ''}
-                            onChange={(e) => handleLongTextChange(qid, e.target.value)}
-                            placeholder="Schreiben Sie hier Ihre ausführliche Antwort…"
-                            maxLength={2048}
-                            rows={8}
-                            className="resize-none"
-                          />
-                          <p className="text-xs text-gray-400 text-right">{(answers[qid]?.[0] || '').length}/2048 Zeichen</p>
-                        </div>
-                      )}
-
-                      {/* Comment field */}
-                      {!longTextQuestion && hasCommentOption(qid) && (
-                        <div className="mt-5 pt-4 border-t border-gray-100">
-                          <Label htmlFor={`comment-${qid}`} className="flex items-center gap-1.5 text-sm text-gray-600 mb-1.5">
-                            <MessageSquare className="w-4 h-4 text-blue-400" />
-                            Persönlicher Kommentar <span className="text-gray-400">(optional)</span>
-                          </Label>
-                          <textarea
-                            id={`comment-${qid}`}
-                            value={comments[qid] || ''}
-                            onChange={(e) => handleCommentChange(qid, e.target.value)}
-                            maxLength={1024}
-                            rows={3}
-                            placeholder="Ihr persönlicher Kommentar zu dieser Frage…"
-                            className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-none"
-                          />
-                          <p className="text-xs text-gray-400 text-right mt-1">{(comments[qid] || '').length}/1024</p>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                );
-              })()}
-
-              {/* Navigation */}
               <div className="mt-6 flex items-center gap-3">
-                <Button
-                  variant="outline"
-                  onClick={goPrev}
-                  disabled={currentIndex === 0}
-                  className="flex items-center gap-2 px-5"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  Zurück
+                <Button variant="outline" onClick={goPrev} disabled={currentIndex === 0} className="flex items-center gap-2 px-5">
+                  <ChevronLeft className="w-4 h-4" /> Zurück
                 </Button>
 
-                {/* Dot indicators */}
                 <div className="flex-1 flex justify-center gap-1.5 flex-wrap">
-                  {questions.map((q, i) => {
-                    const answered = isTextQuestion(q.id)
-                      ? (answers[q.id] || []).map(normalizeTextTerm).filter(Boolean).length > 0
-                      : isLongTextQuestion(q.id)
-                      ? (answers[q.id]?.[0] || '').trim().length > 0
-                      : isMultiRatingQuestion(q.id)
-                      ? (answers[q.id] || []).filter((v) => v.includes(':')).length === getVisibleOptions(q.id).length
-                      : (answers[q.id] || []).length > 0;
-                    return (
-                      <button
-                        key={q.id}
-                        onClick={() => setCurrentIndex(i)}
-                        title={`Frage ${i + 1}`}
-                        className={`w-2.5 h-2.5 rounded-full transition-all ${
-                          i === currentIndex
-                            ? 'bg-blue-600 scale-125'
-                            : answered
-                            ? 'bg-blue-300'
-                            : 'bg-gray-300 hover:bg-gray-400'
-                        }`}
-                      />
-                    );
-                  })}
+                  {questions.map((q, i) => (
+                    <button
+                      key={q.id}
+                      onClick={() => setCurrentIndex(i)}
+                      title={`Frage ${i + 1}`}
+                      className={`w-2.5 h-2.5 rounded-full transition-all ${
+                        i === currentIndex
+                          ? 'bg-blue-600 scale-125'
+                          : isQuestionAnswered(q.id, answers, options, questions)
+                          ? 'bg-blue-300'
+                          : 'bg-gray-300 hover:bg-gray-400'
+                      }`}
+                    />
+                  ))}
                 </div>
 
                 {isLastQuestion ? (
-                  <Button
-                    onClick={handlePreviewSubmit}
-                    className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold"
-                  >
-                    <Send className="w-4 h-4" />
-                    Absenden
+                  <Button onClick={handlePreviewSubmit} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold">
+                    <Send className="w-4 h-4" /> Absenden
                   </Button>
                 ) : (
                   <Button onClick={goNext} className="flex items-center gap-2 px-5 bg-blue-600 hover:bg-blue-700">
-                    Weiter
-                    <ChevronRight className="w-4 h-4" />
+                    Weiter <ChevronRight className="w-4 h-4" />
                   </Button>
                 )}
               </div>

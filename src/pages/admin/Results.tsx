@@ -15,19 +15,14 @@ import {
 } from 'recharts';
 import { QRCodeSVG } from 'qrcode.react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+  isMetaOption,
+  isCommentMetaOption,
+  isTextMetaOption,
+  isCategoryMetaOption,
+} from '@/lib/surveyHelpers';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
-
-const META_PREFIX = '__dyad_meta__:';
-
-function isMetaOption(t: string) { return t.startsWith(META_PREFIX); }
-function parseMeta(t: string) {
-  if (!isMetaOption(t)) return null;
-  try { return JSON.parse(t.slice(META_PREFIX.length)); } catch { return null; }
-}
-function isCommentMetaOption(t: string) { return parseMeta(t)?.kind === 'comment'; }
-function isTextMetaOption(t: string) { return parseMeta(t)?.kind === 'text'; }
-function isCategoryMetaOption(t: string) { return parseMeta(t)?.kind === 'category'; }
 
 // ── SVG → PNG helper ────────────────────────────────────────────────────────
 
@@ -164,10 +159,23 @@ const Results = () => {
   const hasComments = (questionId: string) =>
     (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
 
-  const getComments = (questionId: string): string[] =>
-    filterResponses(responses.filter((r) => r.question_id === questionId && r.text_response && !r.option_id))
+  /**
+   * Get comments for a question. For longtext questions, all text_response
+   * entries without option_id are the actual answers, not comments – so we
+   * only return comments for questions that actually have the comment meta-option.
+   * For multirating, responses have option_id set, so !option_id correctly
+   * excludes rating data. This explicit check makes the filter robust.
+   */
+  const getComments = (questionId: string): string[] => {
+    if (!hasComments(questionId)) return [];
+    const q = questions.find((q) => q.id === questionId);
+    // For longtext questions, text_response without option_id IS the answer, not a comment.
+    // Comments are not supported on longtext questions (UI prevents it), but guard anyway.
+    if (q?.question_type === 'longtext') return [];
+    return filterResponses(responses.filter((r) => r.question_id === questionId && r.text_response && !r.option_id))
       .map((r) => r.text_response as string)
       .filter(Boolean);
+  };
 
   const getWordCloud = (questionId: string) => {
     const questionResponses = filterResponses(
