@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { CheckCircle2, BarChart3, ChevronLeft, ChevronRight, Send } from 'lucide-react';
+import { CheckCircle2, BarChart3 } from 'lucide-react';
 import QuestionRenderer from '@/components/QuestionRenderer';
+import { SurveyNavigation, SurveyNavigationControls } from '@/components/SurveyNavigation';
+import { useSurveyAnswers } from '@/hooks/useSurveyAnswers';
 import {
   stripMetaFromDescription,
   normalizeTextTerm,
@@ -29,8 +29,6 @@ const SurveyPage = () => {
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [options, setOptions] = useState<{ [qid: string]: Option[] }>({});
-  const [answers, setAnswers] = useState<{ [qid: string]: string[] }>({});
-  const [comments, setComments] = useState<{ [qid: string]: string }>({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -44,6 +42,12 @@ const SurveyPage = () => {
     () => !submitting && !submitted && !alreadyVoted && !limitReached && !expired,
     [alreadyVoted, expired, limitReached, submitted, submitting],
   );
+
+  const {
+    answers, comments,
+    handleSingleChoice, handleMultipleChoice, handleTextChange,
+    handleLongTextChange, handleCommentChange, handleMultiRatingChange,
+  } = useSurveyAnswers(!canVote);
 
   useEffect(() => { loadSurvey(); }, [id]);
 
@@ -90,44 +94,6 @@ const SurveyPage = () => {
       }
     } catch { toast.error('Umfrage nicht gefunden oder nicht aktiv'); }
     finally { setLoading(false); }
-  };
-
-  // ── answer handlers ───────────────────────────────────────────────────────────
-
-  const handleSingleChoice = (qid: string, optionId: string) => {
-    if (!canVote) return;
-    setAnswers((prev) => ({ ...prev, [qid]: [optionId] }));
-  };
-  const handleMultipleChoice = (qid: string, optionId: string, checked: boolean) => {
-    if (!canVote) return;
-    setAnswers((prev) => {
-      const cur = prev[qid] || [];
-      return { ...prev, [qid]: checked ? [...cur, optionId] : cur.filter((id) => id !== optionId) };
-    });
-  };
-  const handleTextChange = (qid: string, index: number, value: string) => {
-    if (!canVote) return;
-    setAnswers((prev) => {
-      const next = (prev[qid] || []).slice();
-      while (next.length <= index) next.push('');
-      next[index] = value;
-      return { ...prev, [qid]: next };
-    });
-  };
-  const handleLongTextChange = (qid: string, value: string) => {
-    if (!canVote) return;
-    setAnswers((prev) => ({ ...prev, [qid]: [value] }));
-  };
-  const handleCommentChange = (qid: string, value: string) => {
-    if (!canVote) return;
-    setComments((prev) => ({ ...prev, [qid]: value }));
-  };
-  const handleMultiRatingChange = (qid: string, optionId: string, rating: string) => {
-    if (!canVote) return;
-    setAnswers((prev) => {
-      const cur = (prev[qid] || []).filter((v) => !v.startsWith(`${optionId}:`));
-      return { ...prev, [qid]: [...cur, `${optionId}:${rating}`] };
-    });
   };
 
   // ── navigation ────────────────────────────────────────────────────────────────
@@ -178,8 +144,6 @@ const SurveyPage = () => {
         if (survey.max_votes && participants.size >= survey.max_votes) { setLimitReached(true); toast.error('Das Stimmen-Limit wurde erreicht'); return; }
       }
 
-      // Collect all response rows, then batch-insert in one call.
-      // Text questions need async option-id resolution first.
       const responseRows: { question_id: string; option_id: string | null; participant_id: string; text_response?: string }[] = [];
 
       for (const question of questions) {
@@ -270,9 +234,6 @@ const SurveyPage = () => {
   }
 
   const showClosedBanner = expired || limitReached || alreadyVoted;
-  const totalQuestions = questions.length;
-  const isLastQuestion = currentIndex === totalQuestions - 1;
-  const progressPercent = totalQuestions > 0 ? ((currentIndex + 1) / totalQuestions) * 100 : 0;
   const currentQuestion = questions[currentIndex];
 
   return (
@@ -297,17 +258,14 @@ const SurveyPage = () => {
           </Card>
         )}
 
-        {totalQuestions > 0 && (
+        {questions.length > 0 && (
           <>
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-medium text-gray-600">
-                  Frage <span className="text-blue-600 font-bold">{currentIndex + 1}</span> von <span className="font-bold">{totalQuestions}</span>
-                </span>
-                <span className="text-sm text-gray-500">{Math.round(progressPercent)}%</span>
-              </div>
-              <Progress value={progressPercent} className="h-2.5 rounded-full" />
-            </div>
+            <SurveyNavigation
+              questions={questions} currentIndex={currentIndex} answers={answers}
+              options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
+              onNext={goNext} onSubmit={handleSubmit} submitLabel="Absenden"
+              submitDisabled={!canVote} submitting={submitting}
+            />
 
             {currentQuestion && (
               <QuestionRenderer
@@ -327,45 +285,13 @@ const SurveyPage = () => {
               />
             )}
 
-            <div className="mt-6 flex items-center gap-3">
-              <Button variant="outline" onClick={goPrev} disabled={currentIndex === 0} className="flex items-center gap-2 px-5">
-                <ChevronLeft className="w-4 h-4" /> Zurück
-              </Button>
-
-              <div className="flex-1 flex justify-center gap-1.5 flex-wrap">
-                {questions.map((q, i) => (
-                  <button
-                    key={q.id}
-                    onClick={() => setCurrentIndex(i)}
-                    title={`Frage ${i + 1}`}
-                    className={`w-2.5 h-2.5 rounded-full transition-all ${
-                      i === currentIndex
-                        ? 'bg-blue-600 scale-125'
-                        : isQuestionAnswered(q.id, answers, options, questions)
-                        ? 'bg-blue-300'
-                        : 'bg-gray-300 hover:bg-gray-400'
-                    }`}
-                  />
-                ))}
-              </div>
-
-              {isLastQuestion ? (
-                <Button onClick={handleSubmit} disabled={!canVote || submitting} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold">
-                  <Send className="w-4 h-4" />
-                  {submitting ? 'Wird gesendet…' : 'Absenden'}
-                </Button>
-              ) : (
-                <Button onClick={goNext} className="flex items-center gap-2 px-5 bg-blue-600 hover:bg-blue-700">
-                  Weiter <ChevronRight className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
-
-            {isLastQuestion && canVote && (
-              <p className="text-center text-sm text-gray-500 mt-4">
-                Alle Antworten werden erst beim Klick auf <strong>„Absenden"</strong> gespeichert.
-              </p>
-            )}
+            <SurveyNavigationControls
+              questions={questions} currentIndex={currentIndex} answers={answers}
+              options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
+              onNext={goNext} onSubmit={handleSubmit} submitLabel="Absenden"
+              submitDisabled={!canVote} submitting={submitting}
+              showSubmitHint={canVote}
+            />
 
             {typeof survey.max_votes === 'number' && (
               <p className="text-center text-xs text-gray-400 mt-3">

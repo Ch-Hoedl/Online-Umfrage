@@ -5,7 +5,7 @@ import { Survey, Question, Option, Response } from '@/integrations/supabase/type
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, QrCode, Share2, Lock, MessageSquare, Tag, Filter, Download } from 'lucide-react';
+import { ArrowLeft, QrCode, Share2, Lock, Tag, Filter, Download } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
@@ -20,7 +20,12 @@ import {
   isCommentMetaOption,
   isTextMetaOption,
   isCategoryMetaOption,
+  isTextQuestion,
+  isLongTextQuestion,
+  isMultiRatingQuestion,
+  hasCommentOption,
 } from '@/lib/surveyHelpers';
+import CommentsSection from '@/components/results/CommentsSection';
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
 
@@ -135,29 +140,16 @@ const Results = () => {
     }));
   };
 
-  const isTextOnlyQuestion = (questionId: string) => {
-    const q = questions.find((q) => q.id === questionId);
-    if (q?.question_type === 'text') return true;
-    return (options[questionId] || []).some((o) => isTextMetaOption(o.option_text));
-  };
-
-  const isLongTextQuestion = (questionId: string) => {
-    const q = questions.find((q) => q.id === questionId);
-    return q?.question_type === 'longtext';
-  };
-
-  const isMultiRatingQuestion = (questionId: string) => {
-    const q = questions.find((q) => q.id === questionId);
-    return q?.question_type === 'multirating';
-  };
+  const isTextOnlyQuestion = (questionId: string) => isTextQuestion(questionId, options, questions);
+  const isLongTextQ = (questionId: string) => isLongTextQuestion(questionId, questions);
+  const isMultiRatingQ = (questionId: string) => isMultiRatingQuestion(questionId, questions);
 
   const getLongTextResponses = (questionId: string): string[] =>
     filterResponses(responses.filter((r) => r.question_id === questionId && r.text_response && !r.option_id))
       .map((r) => r.text_response as string)
       .filter(Boolean);
 
-  const hasComments = (questionId: string) =>
-    (options[questionId] || []).some((o) => isCommentMetaOption(o.option_text));
+  const hasCommentsForQ = (questionId: string) => hasCommentOption(questionId, options);
 
   /**
    * Get comments for a question. For longtext questions, all text_response
@@ -167,7 +159,7 @@ const Results = () => {
    * excludes rating data. This explicit check makes the filter robust.
    */
   const getComments = (questionId: string): string[] => {
-    if (!hasComments(questionId)) return [];
+    if (!hasCommentsForQ(questionId)) return [];
     const q = questions.find((q) => q.id === questionId);
     // For longtext questions, text_response without option_id IS the answer, not a comment.
     // Comments are not supported on longtext questions (UI prevents it), but guard anyway.
@@ -286,7 +278,7 @@ const Results = () => {
               yPosition += 5;
             });
           }
-        } else if (isLongTextQuestion(question.id)) {
+        } else if (isLongTextQ(question.id)) {
           const longTextResponses = getLongTextResponses(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
@@ -309,7 +301,7 @@ const Results = () => {
               yPosition += 3;
             });
           }
-        } else if (isMultiRatingQuestion(question.id)) {
+        } else if (isMultiRatingQ(question.id)) {
           const mrData = getMultiRatingData(question.id);
           pdf.setFontSize(10);
           pdf.setFont('helvetica', 'normal');
@@ -365,7 +357,7 @@ const Results = () => {
         }
 
         // Comments
-        if (hasComments(question.id)) {
+        if (hasCommentsForQ(question.id)) {
           const commentList = getComments(question.id);
           if (commentList.length > 0) {
             ensureSpace(15);
@@ -410,7 +402,7 @@ const Results = () => {
       responses.forEach((response) => {
         const question = questions.find((q) => q.id === response.question_id);
 
-        if (question && response.text_response && !response.option_id && isLongTextQuestion(question.id)) {
+        if (question && response.text_response && !response.option_id && isLongTextQ(question.id)) {
           const row = [
             response.participant_id,
             `"${question.question_text.replace(/"/g, '""')}"`,
@@ -422,7 +414,7 @@ const Results = () => {
           return;
         }
 
-        if (question && isMultiRatingQuestion(question.id) && response.option_id && response.text_response) {
+        if (question && isMultiRatingQ(question.id) && response.option_id && response.text_response) {
           const option = options[response.question_id]?.find((o) => o.id === response.option_id);
           if (option && !isMetaOption(option.option_text)) {
             const row = [
@@ -517,28 +509,9 @@ const Results = () => {
   const filteredCount = filteredParticipants ? filteredParticipants.size : totalResponses;
   const isPublished = survey.status === 'published';
 
-  const CommentsSection = ({ questionId }: { questionId: string }) => {
-    const commentList = getComments(questionId);
-    if (!hasComments(questionId)) return null;
-    return (
-      <div className="mt-6 pt-5 border-t border-gray-100">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3">
-          <MessageSquare className="w-4 h-4 text-blue-500" />
-          Persönliche Kommentare
-          <span className="ml-1 bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">{commentList.length}</span>
-        </h4>
-        {commentList.length === 0 ? (
-          <p className="text-sm text-gray-400 italic">Noch keine Kommentare.</p>
-        ) : (
-          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-            {commentList.map((c, i) => (
-              <div key={i} className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-sm text-gray-800 leading-relaxed">{c}</div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
+  const renderComments = (questionId: string) => (
+    <CommentsSection commentList={getComments(questionId)} hasComments={hasCommentsForQ(questionId)} />
+  );
 
   const displayQuestions = questions.filter((q) =>
     !(options[q.id] || []).some((o) => isCategoryMetaOption(o.option_text))
@@ -724,7 +697,7 @@ const Results = () => {
                   </div>
                 );
               })()}
-              <CommentsSection questionId={categoryQuestion.id} />
+              {renderComments(categoryQuestion.id)}
             </CardContent>
           </Card>
         )}
@@ -753,13 +726,13 @@ const Results = () => {
                         })}
                       </div>
                     )}
-                    <CommentsSection questionId={question.id} />
+                    {renderComments(question.id)}
                   </CardContent>
                 </Card>
               );
             }
 
-            if (isLongTextQuestion(question.id)) {
+            if (isLongTextQ(question.id)) {
               const longTextResponses = getLongTextResponses(question.id);
               return (
                 <Card key={question.id}>
@@ -791,7 +764,7 @@ const Results = () => {
               );
             }
 
-            if (isMultiRatingQuestion(question.id)) {
+            if (isMultiRatingQ(question.id)) {
               const mrData = getMultiRatingData(question.id);
               return (
                 <Card key={question.id}>
@@ -873,7 +846,7 @@ const Results = () => {
                         </div>
                       </div>
                     )}
-                    <CommentsSection questionId={question.id} />
+                    {renderComments(question.id)}
                   </CardContent>
                 </Card>
               );
@@ -934,7 +907,7 @@ const Results = () => {
                       </TabsContent>
                     </Tabs>
                   </div>
-                  <CommentsSection questionId={question.id} />
+                  {renderComments(question.id)}
                 </CardContent>
               </Card>
             );

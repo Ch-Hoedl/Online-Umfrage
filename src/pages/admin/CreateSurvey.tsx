@@ -19,6 +19,9 @@ import {
   parseTextMaxAnswers,
   isCommentMetaOption,
   isCategoryMetaOption,
+  META_ORDER_TEXT,
+  META_ORDER_COMMENT,
+  META_ORDER_CATEGORY,
 } from '@/lib/surveyHelpers';
 import type { Question as DbQuestion, Option as DbOption } from '@/integrations/supabase/types';
 
@@ -534,12 +537,12 @@ const CreateSurvey = () => {
       } else if (q.question_type === 'multirating') {
         q.options.forEach((o, j) => optRows.push({ question_id: qId, option_text: o.text, order_index: j }));
       } else if (q.question_type === 'text') {
-        optRows.push({ question_id: qId, option_text: buildTextMetaOption(Number(q.text_max_answers)), order_index: 9999 });
+        optRows.push({ question_id: qId, option_text: buildTextMetaOption(Number(q.text_max_answers)), order_index: META_ORDER_TEXT });
       } else if (q.question_type !== 'longtext') {
         q.options.forEach((o, j) => optRows.push({ question_id: qId, option_text: o.text, order_index: j }));
       }
-      if (q.allow_comment) optRows.push({ question_id: qId, option_text: buildCommentMetaOption(), order_index: 9998 });
-      if (q.is_category && q.question_type === 'single') optRows.push({ question_id: qId, option_text: buildCategoryMetaOption(), order_index: 9997 });
+      if (q.allow_comment) optRows.push({ question_id: qId, option_text: buildCommentMetaOption(), order_index: META_ORDER_COMMENT });
+      if (q.is_category && q.question_type === 'single') optRows.push({ question_id: qId, option_text: buildCategoryMetaOption(), order_index: META_ORDER_CATEGORY });
     }
     if (optRows.length > 0) {
       const { error: oErr } = await supabase.from('options').insert(optRows);

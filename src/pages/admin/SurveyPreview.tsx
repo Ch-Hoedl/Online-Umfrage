@@ -4,10 +4,11 @@ import { supabase } from '@/integrations/supabase/client';
 import { Survey, Question, Option } from '@/integrations/supabase/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { BarChart3, ChevronLeft, ChevronRight, Send, Eye, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { BarChart3, Eye, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import QuestionRenderer from '@/components/QuestionRenderer';
+import { SurveyNavigation, SurveyNavigationControls } from '@/components/SurveyNavigation';
+import { useSurveyAnswers } from '@/hooks/useSurveyAnswers';
 import {
   isQuestionAnswered,
   isMultiRatingQuestion as isMultiRatingQ,
@@ -20,11 +21,15 @@ const SurveyPreview = () => {
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [options, setOptions] = useState<{ [qid: string]: Option[] }>({});
-  const [answers, setAnswers] = useState<{ [qid: string]: string[] }>({});
-  const [comments, setComments] = useState<{ [qid: string]: string }>({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [previewSubmitted, setPreviewSubmitted] = useState(false);
+
+  const {
+    answers, comments, resetAnswers,
+    handleSingleChoice, handleMultipleChoice, handleTextChange,
+    handleLongTextChange, handleCommentChange, handleMultiRatingChange,
+  } = useSurveyAnswers();
 
   useEffect(() => { loadSurvey(); }, [id]);
 
@@ -63,38 +68,6 @@ const SurveyPreview = () => {
     } catch { toast.error('Umfrage konnte nicht geladen werden'); }
     finally { setLoading(false); }
   };
-
-  // ── answer handlers ───────────────────────────────────────────────────────────
-
-  const handleSingleChoice = (qid: string, optionId: string) =>
-    setAnswers((prev) => ({ ...prev, [qid]: [optionId] }));
-
-  const handleMultipleChoice = (qid: string, optionId: string, checked: boolean) =>
-    setAnswers((prev) => {
-      const cur = prev[qid] || [];
-      return { ...prev, [qid]: checked ? [...cur, optionId] : cur.filter((id) => id !== optionId) };
-    });
-
-  const handleMultiRatingChange = (qid: string, optionId: string, rating: string) => {
-    setAnswers((prev) => {
-      const cur = (prev[qid] || []).filter((v) => !v.startsWith(`${optionId}:`));
-      return { ...prev, [qid]: [...cur, `${optionId}:${rating}`] };
-    });
-  };
-
-  const handleTextChange = (qid: string, index: number, value: string) =>
-    setAnswers((prev) => {
-      const next = (prev[qid] || []).slice();
-      while (next.length <= index) next.push('');
-      next[index] = value;
-      return { ...prev, [qid]: next };
-    });
-
-  const handleLongTextChange = (qid: string, value: string) =>
-    setAnswers((prev) => ({ ...prev, [qid]: [value] }));
-
-  const handleCommentChange = (qid: string, value: string) =>
-    setComments((prev) => ({ ...prev, [qid]: value }));
 
   // ── navigation ────────────────────────────────────────────────────────────────
 
@@ -158,7 +131,7 @@ const SurveyPreview = () => {
                 ⚠️ Vorschau: In der echten Umfrage würden die Antworten jetzt gespeichert.
               </p>
               <Button
-                onClick={() => { setPreviewSubmitted(false); setCurrentIndex(0); setAnswers({}); setComments({}); }}
+                onClick={() => { setPreviewSubmitted(false); setCurrentIndex(0); resetAnswers(); }}
                 variant="outline"
                 className="w-full"
               >
@@ -175,9 +148,6 @@ const SurveyPreview = () => {
     );
   }
 
-  const totalQuestions = questions.length;
-  const isLastQuestion = currentIndex === totalQuestions - 1;
-  const progressPercent = totalQuestions > 0 ? ((currentIndex + 1) / totalQuestions) * 100 : 0;
   const currentQuestion = questions[currentIndex];
 
   return (
@@ -205,17 +175,13 @@ const SurveyPreview = () => {
             {survey.description && <p className="text-gray-600">{survey.description}</p>}
           </div>
 
-          {totalQuestions > 0 && (
+          {questions.length > 0 && (
             <>
-              <div className="mb-6">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-medium text-gray-600">
-                    Frage <span className="text-blue-600 font-bold">{currentIndex + 1}</span> von <span className="font-bold">{totalQuestions}</span>
-                  </span>
-                  <span className="text-sm text-gray-500">{Math.round(progressPercent)}%</span>
-                </div>
-                <Progress value={progressPercent} className="h-2.5 rounded-full" />
-              </div>
+              <SurveyNavigation
+                questions={questions} currentIndex={currentIndex} answers={answers}
+                options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
+                onNext={goNext} onSubmit={handlePreviewSubmit} submitLabel="Absenden"
+              />
 
               {currentQuestion && (
                 <QuestionRenderer
@@ -235,44 +201,11 @@ const SurveyPreview = () => {
                 />
               )}
 
-              <div className="mt-6 flex items-center gap-3">
-                <Button variant="outline" onClick={goPrev} disabled={currentIndex === 0} className="flex items-center gap-2 px-5">
-                  <ChevronLeft className="w-4 h-4" /> Zurück
-                </Button>
-
-                <div className="flex-1 flex justify-center gap-1.5 flex-wrap">
-                  {questions.map((q, i) => (
-                    <button
-                      key={q.id}
-                      onClick={() => setCurrentIndex(i)}
-                      title={`Frage ${i + 1}`}
-                      className={`w-2.5 h-2.5 rounded-full transition-all ${
-                        i === currentIndex
-                          ? 'bg-blue-600 scale-125'
-                          : isQuestionAnswered(q.id, answers, options, questions)
-                          ? 'bg-blue-300'
-                          : 'bg-gray-300 hover:bg-gray-400'
-                      }`}
-                    />
-                  ))}
-                </div>
-
-                {isLastQuestion ? (
-                  <Button onClick={handlePreviewSubmit} className="flex items-center gap-2 px-5 bg-green-600 hover:bg-green-700 text-white font-semibold">
-                    <Send className="w-4 h-4" /> Absenden
-                  </Button>
-                ) : (
-                  <Button onClick={goNext} className="flex items-center gap-2 px-5 bg-blue-600 hover:bg-blue-700">
-                    Weiter <ChevronRight className="w-4 h-4" />
-                  </Button>
-                )}
-              </div>
-
-              {isLastQuestion && (
-                <p className="text-center text-sm text-gray-500 mt-4">
-                  Alle Antworten werden erst beim Klick auf <strong>„Absenden"</strong> gespeichert.
-                </p>
-              )}
+              <SurveyNavigationControls
+                questions={questions} currentIndex={currentIndex} answers={answers}
+                options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
+                onNext={goNext} onSubmit={handlePreviewSubmit} submitLabel="Absenden"
+              />
             </>
           )}
         </div>

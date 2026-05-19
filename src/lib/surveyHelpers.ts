@@ -3,6 +3,13 @@
 
 export const META_PREFIX = '__dyad_meta__:';
 
+// ── Meta-option order_index constants ─────────────────────────────────────────
+// Used in CreateSurvey when saving options to ensure meta-options sort last.
+
+export const META_ORDER_TEXT = 9999;
+export const META_ORDER_COMMENT = 9998;
+export const META_ORDER_CATEGORY = 9997;
+
 export const SURVEY_META_PREFIXES = ['__dyad_meta__:', '__dyad_survey_meta__:'];
 
 // ── Build helpers (for CreateSurvey) ──────────────────────────────────────────
