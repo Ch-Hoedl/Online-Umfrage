@@ -178,40 +178,44 @@ const SurveyPage = () => {
         if (survey.max_votes && participants.size >= survey.max_votes) { setLimitReached(true); toast.error('Das Stimmen-Limit wurde erreicht'); return; }
       }
 
+      // Collect all response rows, then batch-insert in one call.
+      // Text questions need async option-id resolution first.
+      const responseRows: { question_id: string; option_id: string | null; participant_id: string; text_response?: string }[] = [];
+
       for (const question of questions) {
         if (isTextQ(question.id, options, questions)) {
           const max = getTextMax(question.id, options, questions);
           const terms = (answers[question.id] || []).slice(0, max).map(normalizeTextTerm).filter(Boolean);
           for (const term of terms) {
             const optionId = await getOrCreateTextOptionId(question.id, term);
-            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId });
-            if (error) throw error;
+            responseRows.push({ question_id: question.id, option_id: optionId, participant_id: participantId });
           }
         } else if (isLongTextQ(question.id, questions)) {
           const text = (answers[question.id]?.[0] || '').trim().slice(0, 2048);
           if (text) {
-            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: text });
-            if (error) throw error;
+            responseRows.push({ question_id: question.id, option_id: null, participant_id: participantId, text_response: text });
           }
         } else if (isMultiRatingQ(question.id, questions)) {
           const pairs = (answers[question.id] || []).filter((v) => v.includes(':'));
           for (const pair of pairs) {
             const [optionId, rating] = pair.split(':');
-            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId, text_response: rating });
-            if (error) throw error;
+            responseRows.push({ question_id: question.id, option_id: optionId, participant_id: participantId, text_response: rating });
           }
         } else {
           for (const optionId of (answers[question.id] || [])) {
-            const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: optionId, participant_id: participantId });
-            if (error) throw error;
+            responseRows.push({ question_id: question.id, option_id: optionId, participant_id: participantId });
           }
         }
 
         const comment = comments[question.id]?.trim();
         if (comment && hasComment(question.id, options)) {
-          const { error } = await supabase.from('responses').insert({ question_id: question.id, option_id: null, participant_id: participantId, text_response: comment.slice(0, 1024) });
-          if (error) throw error;
+          responseRows.push({ question_id: question.id, option_id: null, participant_id: participantId, text_response: comment.slice(0, 1024) });
         }
+      }
+
+      if (responseRows.length > 0) {
+        const { error } = await supabase.from('responses').insert(responseRows);
+        if (error) throw error;
       }
 
       markVotedLocally(survey.id);

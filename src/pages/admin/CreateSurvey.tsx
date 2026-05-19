@@ -20,6 +20,7 @@ import {
   isCommentMetaOption,
   isCategoryMetaOption,
 } from '@/lib/surveyHelpers';
+import type { Question as DbQuestion, Option as DbOption } from '@/integrations/supabase/types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -259,7 +260,7 @@ const CreateSurvey = () => {
   const [editingByName, setEditingByName] = useState<string | null>(null);
   const [editingSince, setEditingSince] = useState<string | null>(null);
   const [showConflictDialog, setShowConflictDialog] = useState(false);
-  const [conflictData, setConflictData] = useState<any>(null);
+  const [conflictData, setConflictData] = useState<{ currentTitle: string; myTitle: string } | null>(null);
 
   const navigate = useNavigate();
   const { user, profile } = useAuth();
@@ -342,21 +343,22 @@ const CreateSurvey = () => {
       if (abortToken.cancelled) return;
       if (qErr) throw qErr;
 
-      const qIds = (qs || []).map((q: any) => q.id);
-      let opts: any[] = [];
+      const loadedQuestions = (qs || []) as DbQuestion[];
+      const qIds = loadedQuestions.map((q) => q.id);
+      let opts: DbOption[] = [];
       if (qIds.length > 0) {
         const { data: o, error: oErr } = await supabase.from('options').select('*').in('question_id', qIds).order('order_index');
         if (abortToken.cancelled) return;
         if (oErr) throw oErr;
-        opts = o || [];
+        opts = (o || []) as DbOption[];
       }
 
-      const optsByQ: Record<string, any[]> = {};
+      const optsByQ: Record<string, DbOption[]> = {};
       opts.forEach((o) => { (optsByQ[o.question_id] ??= []).push(o); });
 
-      setQuestions((qs || []).map((q: any) => {
+      setQuestions(loadedQuestions.map((q) => {
         const qOpts = optsByQ[q.id] || [];
-        const metaOpt = qOpts.find((o: any) => parseTextMaxAnswers(o.option_text) !== null);
+        const metaOpt = qOpts.find((o) => parseTextMaxAnswers(o.option_text) !== null);
         const isTextQ = q.question_type === 'multiple' && !!metaOpt;
         const qType: QuestionType = isTextQ ? 'text' : (q.question_type as QuestionType);
         return {
@@ -364,9 +366,9 @@ const CreateSurvey = () => {
           question_text: q.question_text,
           question_type: qType,
           text_max_answers: metaOpt ? (parseTextMaxAnswers(metaOpt.option_text) ?? 3) : (q.max_text_answers ?? 3),
-          allow_comment: qOpts.some((o: any) => isCommentMetaOption(o.option_text)),
-          is_category: qOpts.some((o: any) => isCategoryMetaOption(o.option_text)),
-          options: qOpts.filter((o: any) => !isMetaOption(o.option_text)).map((o: any) => ({ id: crypto.randomUUID(), text: o.option_text })),
+          allow_comment: qOpts.some((o) => isCommentMetaOption(o.option_text)),
+          is_category: qOpts.some((o) => isCategoryMetaOption(o.option_text)),
+          options: qOpts.filter((o) => !isMetaOption(o.option_text)).map((o) => ({ id: crypto.randomUUID(), text: o.option_text })),
         };
       }));
     } catch (err) {

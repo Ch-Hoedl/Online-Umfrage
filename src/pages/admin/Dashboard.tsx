@@ -243,6 +243,52 @@ const EmptyState = ({ mode }: { mode: 'draft' | 'published' | 'public' }) => {
   );
 };
 
+// ── Shared helper: copy questions + options from one survey to another ────────
+
+async function copyQuestionsAndOptions(sourceSurveyId: string, targetSurveyId: string) {
+  const { data: questions, error: qErr } = await supabase
+    .from('questions').select('*').eq('survey_id', sourceSurveyId).order('order_index');
+  if (qErr) throw qErr;
+
+  const oldQs = (questions || []) as Question[];
+  if (oldQs.length === 0) return;
+
+  // Batch-insert all questions at once
+  const qRows = oldQs.map((q) => ({
+    survey_id: targetSurveyId,
+    question_text: q.question_text,
+    question_type: q.question_type,
+    order_index: q.order_index,
+    max_text_answers: q.max_text_answers ?? null,
+  }));
+  const { data: insertedQs, error: iqErr } = await supabase
+    .from('questions').insert(qRows).select('id, order_index');
+  if (iqErr) throw iqErr;
+
+  // Map old question IDs to new ones via order_index
+  const sortedNew = [...(insertedQs || [])].sort((a, b) => a.order_index - b.order_index);
+  const qIdMap = new Map<string, string>();
+  oldQs.forEach((q, i) => { qIdMap.set(q.id, sortedNew[i]?.id); });
+
+  // Batch-insert all options at once
+  const { data: optionsData, error: oErr } = await supabase
+    .from('options').select('*').in('question_id', oldQs.map((q) => q.id)).order('order_index');
+  if (oErr) throw oErr;
+
+  const optInserts = (optionsData || [])
+    .map((opt: Option) => {
+      const newQId = qIdMap.get(opt.question_id);
+      if (!newQId) return null;
+      return { question_id: newQId, option_text: opt.option_text, order_index: opt.order_index };
+    })
+    .filter(Boolean) as { question_id: string; option_text: string; order_index: number }[];
+
+  if (optInserts.length > 0) {
+    const { error: iErr } = await supabase.from('options').insert(optInserts);
+    if (iErr) throw iErr;
+  }
+}
+
 // ── Main Dashboard component ──────────────────────────────────────────────────
 
 const Dashboard = () => {
@@ -295,7 +341,7 @@ const Dashboard = () => {
         const { data: profiles } = await supabase.from('profiles').select('id, first_name, last_name').in('id', userIds);
         if (profiles) {
           const names: Record<string, string> = {};
-          profiles.forEach((p: any) => { names[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unbekannt'; });
+          profiles.forEach((p) => { names[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unbekannt'; });
           setLastModifiedByNames(names);
         }
       }
@@ -307,11 +353,11 @@ const Dashboard = () => {
     try {
       const { data: questions } = await supabase.from('questions').select('id, survey_id').in('survey_id', surveyIds);
       if (!questions?.length) return;
-      const { data: responses } = await supabase.from('responses').select('question_id, participant_id').in('question_id', questions.map((q: any) => q.id));
+      const { data: responses } = await supabase.from('responses').select('question_id, participant_id').in('question_id', questions.map((q) => q.id));
       const counts: Record<string, Set<string>> = {};
-      questions.forEach((q: any) => { counts[q.survey_id] ??= new Set(); });
-      (responses || []).forEach((r: any) => {
-        const q = questions.find((q: any) => q.id === r.question_id);
+      questions.forEach((q) => { counts[q.survey_id] ??= new Set(); });
+      (responses || []).forEach((r) => {
+        const q = questions.find((qi) => qi.id === r.question_id);
         if (q) counts[q.survey_id]?.add(r.participant_id);
       });
       const result: Record<string, number> = {};
@@ -327,10 +373,10 @@ const Dashboard = () => {
       setDeleteResponseCount(null);
       try {
         const { data: qs } = await supabase.from('questions').select('id').eq('survey_id', survey.id);
-        const qIds = (qs || []).map((q: any) => q.id);
+        const qIds = (qs || []).map((q) => q.id);
         if (qIds.length > 0) {
           const { data: rs } = await supabase.from('responses').select('participant_id').in('question_id', qIds);
-          setDeleteResponseCount(new Set((rs || []).map((r: any) => r.participant_id)).size);
+          setDeleteResponseCount(new Set((rs || []).map((r) => r.participant_id)).size);
         } else { setDeleteResponseCount(0); }
       } catch { setDeleteResponseCount(0); }
       finally { setLoadingResponseCount(false); }
@@ -366,26 +412,7 @@ const Dashboard = () => {
       }).select('*').single();
       if (sErr) throw sErr;
 
-      const { data: questions, error: qErr } = await supabase.from('questions').select('*').eq('survey_id', publishSurvey.id).order('order_index');
-      if (qErr) throw qErr;
-
-      const oldQs = (questions || []) as Question[];
-      const qIdMap = new Map<string, string>();
-      for (const q of oldQs) {
-        const { data: iq, error: iqErr } = await supabase.from('questions').insert({
-          survey_id: newSurvey.id, question_text: q.question_text, question_type: q.question_type,
-          order_index: q.order_index, max_text_answers: (q as any).max_text_answers ?? null,
-        }).select('*').single();
-        if (iqErr) throw iqErr;
-        qIdMap.set(q.id, iq.id);
-      }
-
-      if (oldQs.length > 0) {
-        const { data: options, error: oErr } = await supabase.from('options').select('*').in('question_id', oldQs.map((q) => q.id)).order('order_index');
-        if (oErr) throw oErr;
-        const inserts = (options || []).map((opt: Option) => ({ question_id: qIdMap.get(opt.question_id)!, option_text: opt.option_text, order_index: opt.order_index }));
-        if (inserts.length > 0) { const { error: iErr } = await supabase.from('options').insert(inserts); if (iErr) throw iErr; }
-      }
+      await copyQuestionsAndOptions(publishSurvey.id, newSurvey.id);
 
       toast.success('Umfrage ist jetzt produktiv! Die Vorlage bleibt erhalten.');
       loadSurveys();
@@ -405,26 +432,7 @@ const Dashboard = () => {
       }).select('*').single();
       if (sErr) throw sErr;
 
-      const { data: questions, error: qErr } = await supabase.from('questions').select('*').eq('survey_id', duplicateSurvey.id).order('order_index');
-      if (qErr) throw qErr;
-
-      const oldQs = (questions || []) as Question[];
-      const qIdMap = new Map<string, string>();
-      for (const q of oldQs) {
-        const { data: iq, error: iqErr } = await supabase.from('questions').insert({
-          survey_id: newSurvey.id, question_text: q.question_text, question_type: q.question_type,
-          order_index: q.order_index, max_text_answers: (q as any).max_text_answers ?? null,
-        }).select('*').single();
-        if (iqErr) throw iqErr;
-        qIdMap.set(q.id, iq.id);
-      }
-
-      if (oldQs.length > 0) {
-        const { data: options, error: oErr } = await supabase.from('options').select('*').in('question_id', oldQs.map((q) => q.id)).order('order_index');
-        if (oErr) throw oErr;
-        const inserts = (options || []).map((opt: Option) => ({ question_id: qIdMap.get(opt.question_id)!, option_text: opt.option_text, order_index: opt.order_index }));
-        if (inserts.length > 0) { const { error: iErr } = await supabase.from('options').insert(inserts); if (iErr) throw iErr; }
-      }
+      await copyQuestionsAndOptions(duplicateSurvey.id, newSurvey.id);
 
       toast.success('Als neue Vorlage dupliziert');
       setDuplicateSurvey(null); setDuplicateTitle('');
