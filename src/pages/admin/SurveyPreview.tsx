@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { BarChart3, Eye, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import QuestionRenderer from '@/components/QuestionRenderer';
-import { SurveyNavigation, SurveyNavigationControls } from '@/components/SurveyNavigation';
+import SurveyNavigation from '@/components/SurveyNavigation';
 import { useSurveyAnswers } from '@/hooks/useSurveyAnswers';
 import {
   isQuestionAnswered,
@@ -181,31 +181,25 @@ const SurveyPreview = () => {
                 questions={questions} currentIndex={currentIndex} answers={answers}
                 options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
                 onNext={goNext} onSubmit={handlePreviewSubmit} submitLabel="Absenden"
-              />
-
-              {currentQuestion && (
-                <QuestionRenderer
-                  question={currentQuestion}
-                  questionIndex={currentIndex}
-                  answers={answers}
-                  comments={comments}
-                  options={options}
-                  questions={questions}
-                  idPrefix="prev-"
-                  onSingleChoice={handleSingleChoice}
-                  onMultipleChoice={handleMultipleChoice}
-                  onMultiRatingChange={handleMultiRatingChange}
-                  onTextChange={handleTextChange}
-                  onLongTextChange={handleLongTextChange}
-                  onCommentChange={handleCommentChange}
-                />
-              )}
-
-              <SurveyNavigationControls
-                questions={questions} currentIndex={currentIndex} answers={answers}
-                options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
-                onNext={goNext} onSubmit={handlePreviewSubmit} submitLabel="Absenden"
-              />
+              >
+                {currentQuestion && (
+                  <QuestionRenderer
+                    question={currentQuestion}
+                    questionIndex={currentIndex}
+                    answers={answers}
+                    comments={comments}
+                    options={options}
+                    questions={questions}
+                    idPrefix="prev-"
+                    onSingleChoice={handleSingleChoice}
+                    onMultipleChoice={handleMultipleChoice}
+                    onMultiRatingChange={handleMultiRatingChange}
+                    onTextChange={handleTextChange}
+                    onLongTextChange={handleLongTextChange}
+                    onCommentChange={handleCommentChange}
+                  />
+                )}
+              </SurveyNavigation>
             </>
           )}
         </div>

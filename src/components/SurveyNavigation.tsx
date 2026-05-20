@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { ChevronLeft, ChevronRight, Send } from 'lucide-react';
@@ -16,8 +17,9 @@ interface SurveyNavigationProps {
   submitLabel: string;
   submitDisabled?: boolean;
   submitting?: boolean;
-  /** Show the "answers saved on submit" hint on last question */
   showSubmitHint?: boolean;
+  /** Content rendered between progress bar and controls (typically QuestionRenderer) */
+  children: ReactNode;
 }
 
 const SurveyNavigation = ({
@@ -33,12 +35,13 @@ const SurveyNavigation = ({
   submitDisabled = false,
   submitting = false,
   showSubmitHint = true,
+  children,
 }: SurveyNavigationProps) => {
   const totalQuestions = questions.length;
-  const isLastQuestion = currentIndex === totalQuestions - 1;
-  const progressPercent = totalQuestions > 0 ? ((currentIndex + 1) / totalQuestions) * 100 : 0;
-
   if (totalQuestions === 0) return null;
+
+  const isLastQuestion = currentIndex === totalQuestions - 1;
+  const progressPercent = ((currentIndex + 1) / totalQuestions) * 100;
 
   return (
     <>
@@ -53,31 +56,10 @@ const SurveyNavigation = ({
         <Progress value={progressPercent} className="h-2.5 rounded-full" />
       </div>
 
-      {/* Controls (rendered after QuestionRenderer in the parent) */}
-    </>
-  );
-};
+      {/* Question content slot */}
+      {children}
 
-/** Bottom bar with prev/next buttons and dot indicators */
-const SurveyNavigationControls = ({
-  questions,
-  currentIndex,
-  answers,
-  options,
-  onNavigate,
-  onPrev,
-  onNext,
-  onSubmit,
-  submitLabel,
-  submitDisabled = false,
-  submitting = false,
-  showSubmitHint = true,
-}: SurveyNavigationProps) => {
-  const totalQuestions = questions.length;
-  const isLastQuestion = currentIndex === totalQuestions - 1;
-
-  return (
-    <>
+      {/* Controls */}
       <div className="mt-6 flex items-center gap-3">
         <Button variant="outline" onClick={onPrev} disabled={currentIndex === 0} className="flex items-center gap-2 px-5">
           <ChevronLeft className="w-4 h-4" /> Zurück
@@ -125,4 +107,4 @@ const SurveyNavigationControls = ({
   );
 };
 
-export { SurveyNavigation, SurveyNavigationControls };
+export default SurveyNavigation;

@@ -18,7 +18,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import {
   isMetaOption,
   isCommentMetaOption,
-  isTextMetaOption,
   isCategoryMetaOption,
   isTextQuestion,
   isLongTextQuestion,

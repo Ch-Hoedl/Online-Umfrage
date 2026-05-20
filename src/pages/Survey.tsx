@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { CheckCircle2, BarChart3 } from 'lucide-react';
 import QuestionRenderer from '@/components/QuestionRenderer';
-import { SurveyNavigation, SurveyNavigationControls } from '@/components/SurveyNavigation';
+import SurveyNavigation from '@/components/SurveyNavigation';
 import { useSurveyAnswers } from '@/hooks/useSurveyAnswers';
 import {
   stripMetaFromDescription,
@@ -265,33 +265,26 @@ const SurveyPage = () => {
               options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
               onNext={goNext} onSubmit={handleSubmit} submitLabel="Absenden"
               submitDisabled={!canVote} submitting={submitting}
-            />
-
-            {currentQuestion && (
-              <QuestionRenderer
-                question={currentQuestion}
-                questionIndex={currentIndex}
-                answers={answers}
-                comments={comments}
-                options={options}
-                questions={questions}
-                disabled={!canVote}
-                onSingleChoice={handleSingleChoice}
-                onMultipleChoice={handleMultipleChoice}
-                onMultiRatingChange={handleMultiRatingChange}
-                onTextChange={handleTextChange}
-                onLongTextChange={handleLongTextChange}
-                onCommentChange={handleCommentChange}
-              />
-            )}
-
-            <SurveyNavigationControls
-              questions={questions} currentIndex={currentIndex} answers={answers}
-              options={options} onNavigate={setCurrentIndex} onPrev={goPrev}
-              onNext={goNext} onSubmit={handleSubmit} submitLabel="Absenden"
-              submitDisabled={!canVote} submitting={submitting}
               showSubmitHint={canVote}
-            />
+            >
+              {currentQuestion && (
+                <QuestionRenderer
+                  question={currentQuestion}
+                  questionIndex={currentIndex}
+                  answers={answers}
+                  comments={comments}
+                  options={options}
+                  questions={questions}
+                  disabled={!canVote}
+                  onSingleChoice={handleSingleChoice}
+                  onMultipleChoice={handleMultipleChoice}
+                  onMultiRatingChange={handleMultiRatingChange}
+                  onTextChange={handleTextChange}
+                  onLongTextChange={handleLongTextChange}
+                  onCommentChange={handleCommentChange}
+                />
+              )}
+            </SurveyNavigation>
 
             {typeof survey.max_votes === 'number' && (
               <p className="text-center text-xs text-gray-400 mt-3">
