@@ -44,11 +44,12 @@ interface DraftCardProps {
   survey: Survey;
   lastModifiedByNames: Record<string, string>;
   onEdit: (id: string) => void;
+  onPreview: (id: string) => void;
   onDuplicate: (s: Survey) => void;
   onDelete: (s: Survey) => void;
   onPublish: (s: Survey) => void;
 }
-const SurveyCardDraft = ({ survey, lastModifiedByNames, onEdit, onDuplicate, onDelete, onPublish }: DraftCardProps) => (
+const SurveyCardDraft = ({ survey, lastModifiedByNames, onEdit, onPreview, onDuplicate, onDelete, onPublish }: DraftCardProps) => (
   <Card className="hover:shadow-lg transition-all border-2 border-dashed border-amber-200 bg-amber-50/30">
     <CardHeader>
       <div className="flex justify-between items-start gap-2">
@@ -77,6 +78,7 @@ const SurveyCardDraft = ({ survey, lastModifiedByNames, onEdit, onDuplicate, onD
         <Button onClick={() => onEdit(survey.id)} variant="outline" className="flex-1 border-amber-300 hover:bg-amber-50">
           <Edit className="w-4 h-4 mr-2" />Bearbeiten
         </Button>
+        <Button onClick={() => onPreview(survey.id)} variant="outline" size="icon" title="Vorschau" className="border-blue-300 hover:bg-blue-50 text-blue-600"><ScanEye className="w-4 h-4" /></Button>
         <Button onClick={() => onDuplicate(survey)} variant="outline" size="icon" title="Duplizieren"><Copy className="w-4 h-4" /></Button>
         <Button onClick={() => onDelete(survey)} variant="outline" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" title="Löschen"><Trash2 className="w-4 h-4" /></Button>
       </div>
@@ -516,6 +518,7 @@ const Dashboard = () => {
               {privateTemplates.length === 0 ? <EmptyState mode="draft" /> : privateTemplates.map((s) => (
                 <SurveyCardDraft key={s.id} survey={s} lastModifiedByNames={lastModifiedByNames}
                   onEdit={(id) => navigate(`/admin/edit/${id}`)}
+                  onPreview={(id) => navigate(`/admin/preview/${id}`)}
                   onDuplicate={(s) => { setDuplicateSurvey(s); setDuplicateTitle(`${s.title} (Kopie)`); }}
                   onDelete={openDeleteDialog} onPublish={setPublishSurvey} />
               ))}
