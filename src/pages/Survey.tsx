@@ -185,8 +185,10 @@ const SurveyPage = () => {
       markVotedLocally(survey.id);
       setSubmitted(true);
     } catch (error) {
-      console.error(error);
-      toast.error('Fehler beim Absenden der Antworten');
+      console.error('Survey submit failed:', error);
+      const supaError = error as { message?: string; details?: string; hint?: string; code?: string };
+      const detail = supaError?.message || supaError?.details || 'Unbekannter Fehler';
+      toast.error(`Fehler beim Absenden: ${detail}`);
     } finally {
       setSubmitting(false);
     }
