@@ -67,16 +67,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     // Listen for auth changes (skip events that don't need profile reload)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') return;
 
       const u = session?.user ?? null;
       setUser(u);
 
       if (u) {
-        // Don't set loading=true here – user is already authenticated,
-        // we just silently refresh the profile in the background.
-        await loadProfile(u.id);
+        // IMPORTANT: never `await` a Supabase query directly inside this callback –
+        // supabase-js holds an internal lock during the callback and the query
+        // needs the same lock, which deadlocks (endless spinner after login).
+        // Defer the profile load so it runs outside the auth callback.
+        setTimeout(() => { loadProfile(u.id); }, 0);
       } else {
         loadingForRef.current = null;
         setProfile(null);
