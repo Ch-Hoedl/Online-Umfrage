@@ -4,7 +4,7 @@ import { Clock, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { user, profile, loading, signOut } = useAuth();
+  const { user, profile, loading, profileLoading, profileError, reloadProfile, signOut } = useAuth();
 
   if (loading) {
     return (
@@ -19,10 +19,41 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   }
 
   // Profile still loading
-  if (!profile) {
+  if (!profile && profileLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  // Profile failed to load – show the reason instead of spinning forever
+  if (!profile && !profileLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-10 max-w-md w-full text-center">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <span className="text-3xl">⚠️</span>
+          </div>
+          <h2 className="text-xl font-bold text-gray-900 mb-3">Profil konnte nicht geladen werden</h2>
+          <p className="text-gray-600 mb-4">
+            Ihr Benutzerprofil konnte nicht geladen werden.
+          </p>
+          {profileError && (
+            <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-4 break-words">
+              {profileError}
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            <Button onClick={reloadProfile} className="w-full">
+              Erneut versuchen
+            </Button>
+            <Button onClick={signOut} variant="outline" className="w-full flex items-center justify-center gap-2">
+              <LogOut className="w-4 h-4" />
+              Abmelden
+            </Button>
+          </div>
+        </div>
       </div>
     );
   }

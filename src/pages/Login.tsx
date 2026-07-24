@@ -10,7 +10,7 @@ import { toast } from 'sonner';
 
 const Login = () => {
   const navigate = useNavigate();
-  const { user, profile, loading: authLoading } = useAuth();
+  const { user, profile, loading: authLoading, profileLoading, profileError, reloadProfile } = useAuth();
 
   const [isSignUp, setIsSignUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -58,11 +58,45 @@ const Login = () => {
     );
   }
 
-  // User logged in but profile not yet loaded – show spinner (brief moment)
-  if (user && !profile) {
+  // User logged in and profile is still being fetched – show spinner (brief moment)
+  if (user && !profile && profileLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50">
         <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+      </div>
+    );
+  }
+
+  // Logged in, but the profile could not be loaded – show the actual reason
+  // instead of spinning forever.
+  if (user && !profile && !profileLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
+        <div className="max-w-md w-full text-center bg-white rounded-2xl shadow-lg p-8">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <span className="text-3xl">⚠️</span>
+          </div>
+          <h2 className="text-xl font-bold text-gray-900 mb-3">Profil konnte nicht geladen werden</h2>
+          <p className="text-gray-600 mb-2">
+            Die Anmeldung war erfolgreich, aber Ihr Benutzerprofil konnte nicht geladen werden.
+          </p>
+          {profileError && (
+            <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-4 break-words">
+              {profileError}
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            <Button onClick={reloadProfile} className="w-full bg-blue-600 hover:bg-blue-700">
+              Erneut versuchen
+            </Button>
+            <button
+              onClick={() => supabase.auth.signOut()}
+              className="text-sm text-gray-500 underline hover:text-gray-700"
+            >
+              Abmelden
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
